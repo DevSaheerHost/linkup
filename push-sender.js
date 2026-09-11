@@ -75,11 +75,13 @@ async function getGroupMemberIds(id) {
 function messageFor(n, actorName) {
   const who = actorName || 'Someone';
   switch (n.type) {
-    case 'like':      return { title: 'LinkUp', body: who + ' liked your post' };
-    case 'comment':   return { title: who, body: 'commented: ' + (n.text || '') };
-    case 'follow':    return { title: 'LinkUp', body: who + ' started following you' };
-    case 'tag':       return { title: 'LinkUp', body: who + ' tagged you in a post' };
-    case 'storylike': return { title: 'LinkUp', body: who + ' liked your story' };
+    case 'like':        return { title: 'LinkUp', body: who + ' liked your post' };
+    case 'comment':     return { title: who, body: 'commented: ' + (n.text || '') };
+    case 'reply':       return { title: who, body: 'replied: ' + (n.text || '') };
+    case 'commentlike': return { title: 'LinkUp', body: who + ' liked your comment' };
+    case 'follow':      return { title: 'LinkUp', body: who + ' started following you' };
+    case 'tag':         return { title: 'LinkUp', body: who + ' tagged you in a post' };
+    case 'storylike':   return { title: 'LinkUp', body: who + ' liked your story' };
     default:          return { title: 'LinkUp', body: n.text || 'New activity' };
   }
 }

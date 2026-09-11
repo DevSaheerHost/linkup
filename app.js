@@ -445,6 +445,10 @@ async function addComment(pid){
     } else {
       const list=$('cl_'+pid); if(list)list.insertAdjacentHTML('beforeend',commentBlock(rec,[],full,pid));
     }
+    if(parent){
+      const parentAuthor=commentAuthor[parent];
+      if(parentAuthor&&parentAuthor!==postAuthor[pid]) notify('reply',parentAuthor,{post_id:pid,comment_id:parent,text:text.slice(0,80)});
+    }
     notify('comment',postAuthor[pid],{post_id:pid,text:text.slice(0,80)});
   }
   catch(e){toast('Comment failed');}
@@ -1504,7 +1508,7 @@ async function startPresence(){
 function cleanupPresence(){ if(presenceChannel){ try{sb.removeChannel(presenceChannel);}catch(e){} presenceChannel=null; } if(presenceTimer){clearInterval(presenceTimer);presenceTimer=null;} }
 
 /* ============ STORIES / FOLLOW / POST MENU ============ */
-let feedMode='all', postCaption={}, postAuthor={}, postVideo={}, pmId=null, capEditId=null, pvId=null, commentText={}, clikeState={};
+let feedMode='all', postCaption={}, postAuthor={}, postVideo={}, pmId=null, capEditId=null, pvId=null, commentText={}, clikeState={}, commentAuthor={}, commentPost={};
 let storyGroups={}, storyUsers={}, storyOrder=[];
 let svUser=null, svList=[], svIdx=0, svTimer=null, storyFileInput=null, storyViewed=new Set();
 async function loadStories(){
@@ -1770,6 +1774,8 @@ function toggleReplies(rid){
 function commentRow(c,full,pid,isReply){
   const u=c.user||{username:'user'};
   commentText[c.id]=c.text;
+  commentAuthor[c.id]=c.user_id;
+  commentPost[c.id]=pid;
   const mine=c.user_id===me().id;
   const cl=clikeState[c.id]||{count:0,myId:null};
   const liked=!!cl.myId;
@@ -1784,7 +1790,7 @@ async function toggleCLike(cid){
   const cl=clikeState[cid]||{count:0,myId:null}; const prev={count:cl.count,myId:cl.myId};
   try{
     if(cl.myId){ const id=cl.myId; cl.myId=null; cl.count=Math.max(0,cl.count-1); clikeState[cid]=cl; updateCLikeDom(cid); if(id!=='tmp')await sb.from('clikes').delete().eq('id',id); }
-    else { cl.myId='tmp'; cl.count++; clikeState[cid]=cl; updateCLikeDom(cid); const {data:r}=await sb.from('clikes').insert({comment_id:cid,user_id:me().id}).select().single(); cl.myId=r.id; clikeState[cid]=cl; }
+    else { cl.myId='tmp'; cl.count++; clikeState[cid]=cl; updateCLikeDom(cid); const {data:r}=await sb.from('clikes').insert({comment_id:cid,user_id:me().id}).select().single(); cl.myId=r.id; clikeState[cid]=cl; notify('commentlike',commentAuthor[cid],{comment_id:cid,post_id:commentPost[cid]}); }
   }catch(e){ clikeState[cid]=prev; updateCLikeDom(cid); toast('Like failed: '+sbErr(e)); }
 }
 function updateCLikeDom(cid){
@@ -1819,7 +1825,13 @@ async function openNotif(){
     else{
       const actorIds=[...new Set(items.map(n=>n.actor_id))]; const users={};
       await Promise.all(actorIds.map(async id=>{users[id]=await getUser(id);}));
-      body.innerHTML=items.map(n=>{const u=users[n.actor_id]||{username:'someone'};const verb=n.type==='like'?'liked your post':n.type==='comment'?('commented: '+esc(n.text||'')):n.type==='tag'?'tagged you in a post':n.type==='storylike'?'liked your story':'started following you';return `<div class="row ${n.read?'':'nrow'}" onclick="openProfile('${n.actor_id}');closeNotif();"><div class="cav">${avatarHtml(u,44)}</div><div class="last"><div class="snip"><b>${esc(u.username)}</b> ${verb}</div></div><div class="mut">${timeAgo(n.created_at)}</div></div>`;}).join('');
+      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you'};
+      body.innerHTML=items.map(n=>{
+        const u=users[n.actor_id]||{username:'someone'};
+        const v=NOTIF_VERB[n.type]; const verb=typeof v==='function'?v(n):(v||'started following you');
+        const openAction=n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
+        return `<div class="row ${n.read?'':'nrow'}" onclick="${openAction};closeNotif();"><div class="cav">${avatarHtml(u,44)}</div><div class="last"><div class="snip"><b>${esc(u.username)}</b> ${verb}</div></div><div class="mut">${timeAgo(n.created_at)}</div></div>`;
+      }).join('');
     }
     const unread=items.filter(n=>!n.read);
     if(unread.length){ await sb.from('notifications').update({read:true}).in('id',unread.map(n=>n.id)); refreshNotif(); }
