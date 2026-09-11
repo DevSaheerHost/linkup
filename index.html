@@ -32,7 +32,7 @@
 <meta name="twitter:title" content="LinkUp">
 <meta name="twitter:description" content="Share moments, chat, and call your friends on LinkUp.">
 <meta name="twitter:image" content="https://debian.taile6f55d.ts.net/og.png">
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -118,7 +118,7 @@
   </div>
   <div class="cbody" id="chatBody"></div>
   <div id="typing" class="typing">typing<span class="dots"><i></i><i></i><i></i></span></div>
-  <div class="preview" id="chatPrev"><img id="chatPrevImg"></div>
+  <div class="preview" id="chatPrev"><img id="chatPrevImg"><div class="upspin"><span class="spinner"></span></div></div>
   <div class="replybar" id="replyBar" style="display:none"><div class="rbcol"><div class="rbu" id="replyU"></div><div class="rbt" id="replyT"></div></div><button class="rbx" id="replyX" onclick="cancelReply()">&times;</button></div>
   <div class="cfoot" id="cFoot">
     <span class="att" id="chatAtt"></span>
@@ -219,6 +219,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>
