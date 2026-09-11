@@ -5,6 +5,17 @@ const SUPABASE_ANON_KEY = 'sb_publishable_es3WrqJR1IuFySgBAV_-2g_f23h-alp';
 const VAPID_PUBLIC='BABQYQDJkhd8chYRiDZCqemPnc1VF0Y7AmAy7O1OhTK4IGGhWmxBCHh0Ezlrpfj06L1ke6ppSa0PE3qwQm1wutk';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+/* Mirrors the current auth session into IndexedDB (kept in sync below) so
+   the service worker - which has no access to this page's memory or
+   localStorage - can send a message on its own when the user replies
+   directly from a push notification, even with the app fully closed. */
+function idbOpen(){ return new Promise((res,rej)=>{ const rq=indexedDB.open('linkup',1); rq.onupgradeneeded=()=>rq.result.createObjectStore('kv'); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); }); }
+async function idbGet(key){ const db=await idbOpen(); return new Promise((res,rej)=>{ const rq=db.transaction('kv','readonly').objectStore('kv').get(key); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); }); }
+async function idbSet(key,val){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction('kv','readwrite'); tx.objectStore('kv').put(val,key); tx.oncomplete=()=>res(); tx.onerror=()=>rej(tx.error); }); }
+async function idbDel(key){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction('kv','readwrite'); tx.objectStore('kv').delete(key); tx.oncomplete=()=>res(); tx.onerror=()=>rej(tx.error); }); }
+function saveSessionToIDB(session){ if(!session)return Promise.resolve(); return idbSet('session',{access_token:session.access_token,refresh_token:session.refresh_token,user_id:session.user.id,saved_at:Date.now()}).catch(()=>{}); }
+function clearSessionFromIDB(){ return idbDel('session').catch(()=>{}); }
+
 /* ================= HELPERS ================= */
 const $=id=>document.getElementById(id);
 let myProfile=null;
@@ -1242,6 +1253,15 @@ async function getGroupMemberIds(gid){
   catch(e){ return []; }
 }
 function groupAvatar(g,size){ const url=mediaUrl(g,'avatar_url'); if(url)return `<img class="av" style="width:${size}px;height:${size}px" src="${url}">`; const L=esc(((g.name||'G').trim()[0]||'G').toUpperCase()); return `<div class="av gav" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.42)}px">${L}</div>`; }
+/* If a notification reply failed to send in the background (session
+   expired, offline), sw.js stashes the text under this key so it isn't
+   silently lost - restore it into the input the next time this chat opens. */
+async function restoreDraft(conversationKey){
+  try{
+    const text=await idbGet('draft:'+conversationKey);
+    if(text){ $('chatInput').value=text; await idbDel('draft:'+conversationKey); }
+  }catch(_){}
+}
 function buildMessageBase(){
   const row={sender_id:me().id};
   if(chatGroup){ row.group_id=chatGroup.id; row.conversation=chatGroup.id; }
@@ -1275,6 +1295,7 @@ async function openGroup(gid){
     try{ await sb.from('group_reads').upsert({group_id:gid,user_id:me().id,last_read_at:new Date().toISOString()}); }catch(_){}
     refreshUnread();
   }catch(e){ body.innerHTML='<div class="empty">Could not load messages<br><span style="font-size:12px;opacity:.7">'+esc(sbErr(e))+'</span></div>'; }
+  restoreDraft(gid);
 }
 function openNewGroup(){
   $('ngName').value=''; $('newGroup').classList.add('on');
@@ -2119,6 +2140,7 @@ async function openChat(uid){
     body.scrollTop=body.scrollHeight;
     markRead((msgs||[]).filter(m=>m.receiver_id===me().id&&!m.read));
   }catch(e){body.innerHTML='<div class="empty">Could not load messages</div>';}
+  restoreDraft(convKey(me().id,chatUser.id));
 }
 function fmtDur(s){const m=Math.floor(s/60),x=s%60;return m+':'+String(x).padStart(2,'0');}
 function callBubble(m){
@@ -2400,11 +2422,27 @@ function subscribeRealtime(){
 /* ================= BOOT ================= */
 (async function(){
   try{
-    const {data:{session}}=await sb.auth.getSession();
+    let {data:{session}}=await sb.auth.getSession();
     if(session){
+      /* If the service worker sent a reply while the app was closed, it may
+         have rotated the refresh token (Supabase issues a new one on every
+         refresh and invalidates the old). Adopt whatever IndexedDB has if
+         it's newer, so this session doesn't get logged out using a
+         refresh token the SW already spent. */
+      try{
+        const idbSess=await idbGet('session');
+        if(idbSess&&idbSess.refresh_token&&idbSess.refresh_token!==session.refresh_token){
+          const {data,error}=await sb.auth.setSession({access_token:idbSess.access_token,refresh_token:idbSess.refresh_token});
+          if(!error&&data.session)session=data.session;
+        }
+      }catch(_){}
+      await saveSessionToIDB(session);
       const ok=await loadMyProfile(session.user.id,session.user.email);
       if(ok) enterApp(); else { await sb.auth.signOut(); setAuthMode(false); }
     } else { setAuthMode(false); }
   }catch(e){ setAuthMode(false); }
-  sb.auth.onAuthStateChange((event)=>{ if(event==='SIGNED_OUT'){ myProfile=null; } });
+  sb.auth.onAuthStateChange((event,session)=>{
+    if(event==='SIGNED_OUT'){ myProfile=null; clearSessionFromIDB(); }
+    else if(session){ saveSessionToIDB(session); }
+  });
 })();
