@@ -552,7 +552,11 @@ function shareMyLink(){
 }
 
 /* ============ POST VIEWS ============ */
-function registerView(pid){ if(!pid||viewedPosts.has(pid))return; viewedPosts.add(pid); sb.from('postviews').insert({post_id:pid,user_id:me().id}).then(()=>{}).catch(()=>{}); }
+/* One row per (post_id,user_id) is enforced by a unique constraint in the DB,
+   so a view can never be double-counted server-side even if this session's
+   in-memory viewedPosts set gets reset (app relaunch, browser restart, etc).
+   Upsert+ignoreDuplicates just avoids a noisy conflict error on repeats. */
+function registerView(pid){ if(!pid||viewedPosts.has(pid))return; viewedPosts.add(pid); sb.from('postviews').upsert({post_id:pid,user_id:me().id},{onConflict:'post_id,user_id',ignoreDuplicates:true}).then(()=>{}).catch(()=>{}); }
 async function getViewCount(pid){ try{ const {count}=await sb.from('postviews').select('id',{count:'exact',head:true}).eq('post_id',pid); return count||0; }catch(e){ return null; } }
 function fillViews(pid){
   getViewCount(pid).then(n=>{
