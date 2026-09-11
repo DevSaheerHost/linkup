@@ -264,7 +264,14 @@ function urlB64ToUint8(b64){ const pad='='.repeat((4-b64.length%4)%4); const s=(
 async function initPush(){
   if(!('serviceWorker' in navigator)||!('PushManager' in window))return;
   try{ swReg=await navigator.serviceWorker.register('/sw.js'); }catch(e){ return; }
-  if(Notification.permission==='granted') subscribePush(false);
+  if(Notification.permission==='granted'){ subscribePush(false); return; }
+  /* 'default' = never asked (or dismissed without an explicit block), so ask
+     on every app open. Once the user has actually chosen 'denied', browsers
+     resolve this instantly with no dialog - so it's safe to call every time
+     without re-annoying anyone who already said no. */
+  if(Notification.permission==='default'){
+    try{ if(await Notification.requestPermission()==='granted') subscribePush(false); }catch(_){}
+  }
 }
 async function enablePush(){
   if(!('serviceWorker' in navigator)||!('PushManager' in window)){ toast('Push not supported here'); return; }
