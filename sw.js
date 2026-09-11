@@ -48,6 +48,38 @@ async function insertMessage(session, row) {
   });
 }
 
+async function updateCall(session, callId, patch) {
+  return fetch(SUPABASE_URL + '/rest/v1/calls?id=eq.' + callId, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: 'Bearer ' + session.access_token,
+      Prefer: 'return=minimal'
+    },
+    body: JSON.stringify(patch)
+  });
+}
+
+/* Declining from the notification shouldn't require opening the app - it's
+   a single row update (RLS already lets either the caller or callee change
+   a call's status), so it can happen right here, same auth pattern as
+   sendReplyFromNotification. Without this, "Decline" only closed the
+   notification and the caller just sat there ringing for 35s until their
+   own no-answer timeout. */
+async function declineCallFromNotification(callId) {
+  if (!callId) return;
+  let session = await idbGet('session').catch(() => null);
+  if (!session) return;
+  try {
+    let res = await updateCall(session, callId, { status: 'declined' });
+    if (res.status === 401 && session.refresh_token) {
+      session = await refreshSession(session.refresh_token);
+      if (session) await updateCall(session, callId, { status: 'declined' });
+    }
+  } catch (_) { /* best effort - caller's own timeout still applies */ }
+}
+
 /* Sends a text reply typed directly into the notification, without ever
    opening the app. Falls back to stashing the text as a draft (picked up by
    restoreDraft() in app.js next time that chat is opened) if there's no
@@ -101,7 +133,7 @@ self.addEventListener('push', event => {
           { action: 'answer', title: 'Answer' },
           { action: 'decline', title: 'Decline' }
         ],
-        data: { url: data.url || '/', type: 'call' }
+        data: { url: data.url || '/', type: 'call', callId: data.callId }
       });
       return;
     }
@@ -151,8 +183,19 @@ self.addEventListener('notificationclick', event => {
   }
 
   event.notification.close();
-  if (event.action === 'decline') return;   // best effort: caller times out
-  const url = ndata.url || '/';
+
+  if (event.action === 'decline' && ndata.type === 'call') {
+    event.waitUntil(declineCallFromNotification(ndata.callId));
+    return;
+  }
+
+  /* Answer should skip the extra "now tap Accept inside the app" step -
+     jump straight into accepting via a dedicated hash the app treats
+     differently from a plain tap on the notification body (which still
+     just opens the ringing screen, same as before). */
+  const url = (event.action === 'answer' && ndata.type === 'call' && ndata.callId)
+    ? '/#autoanswer=' + ndata.callId
+    : (ndata.url || '/');
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       for (const c of list) {
