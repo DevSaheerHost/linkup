@@ -122,6 +122,18 @@
   .cfoot .send{width:40px;height:40px;border-radius:50%;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center}
   .preview{position:fixed;bottom:64px;left:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;display:none}
   .preview img{width:60px;height:60px;object-fit:cover;border-radius:6px}
+  .preview .upspin{display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:rgba(0,0,0,.4);border-radius:6px}
+  .preview.uploading img{filter:blur(2px)}
+  .preview.uploading .upspin{display:flex}
+
+  /* Loading spinner: send buttons while an upload is in flight. */
+  .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* Media blur-up: shown blurred immediately, sharpens once the browser
+     actually finishes fetching it (onload removes .blur-load below). */
+  img.blur-load{filter:blur(16px);transition:filter .35s ease;background:var(--soft)}
+  img.blur-load.loaded{filter:blur(0)}
 
   .empty{text-align:center;color:var(--mut);padding:50px 20px;font-size:14px}
   #toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#000;color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;z-index:99;display:none;border:1px solid var(--line)}

@@ -430,11 +430,11 @@ function postMedia(p){
     return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
   }
   if(Array.isArray(p.photos)&&p.photos.length>1){
-    const slides=p.photos.map(url=>`<img class="cslide" loading="lazy" decoding="async" src="${url}" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
+    const slides=p.photos.map(url=>`<img class="cslide blur-load" loading="lazy" decoding="async" src="${url}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
     const dots=p.photos.map((_,i)=>`<span class="${i===0?'on':''}"></span>`).join('');
     return `<div class="carousel"><div class="cartrack" id="cart_${p.id}" onscroll="carScroll(this,'${p.id}',${p.photos.length})">${slides}</div><div class="ccount" id="ccount_${p.id}">1/${p.photos.length}</div><div class="cdots" id="cdots_${p.id}">${dots}</div></div>`;
   }
-  return `<img class="pimg" loading="lazy" decoding="async" src="${p.image_url||''}" onclick="mediaTap(event,'${p.id}','feed')">`;
+  return `<img class="pimg blur-load" loading="lazy" decoding="async" src="${p.image_url||''}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`;
 }
 let carScrollT={};
 function carScroll(track,pid,n){
@@ -1070,7 +1070,7 @@ function gridCell(p){
   const play=p.video_url?`<span class="gvid">${icon('reels',16)}</span>`:'';
   const multi=(Array.isArray(p.photos)&&p.photos.length>1)?`<span class="gmulti">${icon('layers',16)}</span>`:'';
   const fb=icon(p.video_url?'reels':'image',24);
-  const img=t?`<img src="${t}" loading="lazy" decoding="async" onerror="this.remove();this.closest('.gcell').classList.add('gph')">`:'';
+  const img=t?`<img class="blur-load" src="${t}" loading="lazy" decoding="async" onload="this.classList.add('loaded')" onerror="this.remove();this.closest('.gcell').classList.add('gph')">`:'';
   return `<div class="gcell ${t?'':'gph'}" onclick="openPostView('${p.id}')">${img}<span class="gfallback">${fb}</span>${play}${multi}</div>`;
 }
 
@@ -1814,7 +1814,7 @@ function buildStoryView(){
 }
 function showStoryFrame(){
   const s=svList[svIdx]; if(!s)return;
-  $('svImg').innerHTML=`<img src="${s.image_url}">`;
+  $('svImg').innerHTML=`<img class="blur-load" src="${s.image_url}" onload="this.classList.add('loaded')">`;
   svList.forEach((_,i)=>{const b=$('sbar_'+i);if(b){b.style.transition='none';b.style.width=i<svIdx?'100%':'0';}});
   const tg=$('svTags'); if(tg)tg.innerHTML=storyTagsLine(s.tags);
   if(svUser.id!==me().id){
@@ -2192,7 +2192,7 @@ function bubble(m){
   const sender=su?`<div class="bsender">${esc(su.username||su.name||'user')}</div>`:'';
   let reply='';
   if(m.reply_to_id&&m.reply_meta){ const r=parseRx(m.reply_meta); reply=`<div class="rquote" onclick="event.stopPropagation();jumpToMsg('${m.reply_to_id}')"><span class="rqu">${esc(r.u||'')}</span><span class="rqt">${esc(r.t||'')}</span></div>`; }
-  const img=m.image_url?`<img loading="lazy" decoding="async" src="${m.image_url}" onclick="window.open('${m.image_url}','_blank')">`:'';
+  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" src="${m.image_url}" onload="this.classList.add('loaded')" onclick="window.open('${m.image_url}','_blank')">`:'';
   const card=m.post_id?`<div class="pcard" data-post="${m.post_id}" data-mid="${m.id}" onclick="openPostView('${m.post_id}')"><span class="pcimg" id="pcimg_${m.id}"></span><span>View post</span></div>`:'';
   const txt=m.text?esc(m.text):'';
   const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" src="${m.audio_url}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
@@ -2307,15 +2307,22 @@ async function startRec(){
   recTimer=setInterval(()=>{ recSecs++; $('recTime').textContent=fmtT(recSecs); if(recSecs>=120)stopAndSendRec(); },1000);
   $('recBar').classList.add('on'); $('cFoot').classList.add('hide');
 }
-function stopRecTracks(){ if(recStream){recStream.getTracks().forEach(t=>t.stop());recStream=null;} clearInterval(recTimer); recTimer=null; $('recBar').classList.remove('on'); $('cFoot').classList.remove('hide'); }
+function stopRecStream(){ if(recStream){recStream.getTracks().forEach(t=>t.stop());recStream=null;} clearInterval(recTimer); recTimer=null; }
+function stopRecTracks(){ stopRecStream(); $('recBar').classList.remove('on'); $('cFoot').classList.remove('hide'); }
 function cancelRec(){ if(mediaRec&&mediaRec.state!=='inactive'){ mediaRec.onstop=null; try{mediaRec.stop();}catch(e){} } recChunks=[]; mediaRec=null; stopRecTracks(); }
 function stopAndSendRec(){
   if(!mediaRec){ stopRecTracks(); return; }
   mediaRec.onstop=async()=>{
     const blob=new Blob(recChunks,{type:recMime||'audio/webm'}); recChunks=[];
-    stopRecTracks();
-    if(!chatUser&&!chatGroup||blob.size<800){ mediaRec=null; return; }
+    stopRecStream();
+    if(!chatUser&&!chatGroup||blob.size<800){ mediaRec=null; stopRecTracks(); return; }
     const ext=(recMime.indexOf('mp4')>=0)?'m4a':'webm';
+    /* Keep the recording bar up (instead of instantly hiding it, which is
+       what stopRecTracks() used to do right here) so there's somewhere to
+       show upload progress - a mic recording with nothing left to look at
+       while it silently uploads is exactly the missing feedback reported. */
+    const sendBtn=$('recSend'), prevIcon=sendBtn.innerHTML;
+    sendBtn.innerHTML='<span class="spinner"></span>'; sendBtn.disabled=true; $('recCancel').disabled=true;
     try{
       const row=buildMessageBase();
       const folder=(chatGroup?chatGroup.id:convKey(me().id,chatUser.id));
@@ -2324,7 +2331,9 @@ function stopAndSendRec(){
       if(error) throw error;
       appendBubble(r); cancelReply();
     }catch(e){ toast('Send failed: '+sbErr(e)); }
+    sendBtn.innerHTML=prevIcon; sendBtn.disabled=false; $('recCancel').disabled=false;
     mediaRec=null;
+    stopRecTracks();
   };
   try{ mediaRec.stop(); }catch(e){ stopRecTracks(); mediaRec=null; }
 }
@@ -2333,17 +2342,22 @@ async function sendMessage(){
   const text=$('chatInput').value.trim();
   if(!text&&!chatImage)return;
   $('chatInput').value='';
+  const hasImage=!!chatImage;
+  const sendBtn=$('chatSend'), prevIcon=sendBtn.innerHTML;
+  if(hasImage){ sendBtn.innerHTML='<span class="spinner"></span>'; sendBtn.disabled=true; $('chatPrev').classList.add('uploading'); }
   try{
     const row=buildMessageBase();
     if(text)row.text=text;
     if(chatImage){
       const folder=(chatGroup?chatGroup.id:convKey(me().id,chatUser.id));
-      row.image_url=await uploadFile('chat',folder+'/'+randPath()+'.jpg',chatImage);
+      const compressed=await compressImage(chatImage,1600,0.8);
+      row.image_url=await uploadFile('chat',folder+'/'+randPath()+'.jpg',compressed);
     }
     const {data:r,error}=await sb.from('messages').insert(row).select().single();
     if(error) throw error;
     appendBubble(r); clearChatImg(); cancelReply();
   }catch(e){toast('Send failed: '+sbErr(e));}
+  finally{ if(hasImage){ sendBtn.innerHTML=prevIcon; sendBtn.disabled=false; $('chatPrev').classList.remove('uploading'); } }
 }
 function markRead(list){
   const todo=(list||[]).filter(m=>m.receiver_id===me().id&&!m.read);
