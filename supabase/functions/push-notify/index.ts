@@ -88,13 +88,26 @@ Deno.serve(async (req) => {
         const from = await getUser(r.sender_id);
         const fromName = from?.username || 'Someone';
         const body = r.audio_url ? 'Voice message' : r.image_url ? 'Photo' : r.post_id ? 'Shared a post' : (r.text || 'New message');
+        // senderName/text let the service worker build an accumulated,
+        // multi-line notification across repeated messages instead of each
+        // new push just overwriting the last one's body. reply carries what
+        // the SW needs to send a message back on its own (inline reply from
+        // the notification, works even with the app fully closed) - for a
+        // group it's the group_id, for a DM it's the *other* person's id
+        // (the original sender, since the recipient is the one replying).
         if (r.group_id) {
           const g = await getGroup(r.group_id);
           const members = await getGroupMemberIds(r.group_id);
-          const msg = { title: g?.name || 'Group', body: fromName + ': ' + body, type: 'message', url: '/', tag: 'grp:' + r.group_id };
+          const msg = {
+            title: g?.name || 'Group', body: fromName + ': ' + body, type: 'message', url: '/', tag: 'grp:' + r.group_id,
+            senderName: fromName, text: body, reply: { groupId: r.group_id, conversation: r.group_id }
+          };
           for (const uid of members) if (uid !== r.sender_id) await sendToUser(uid, msg);
         } else if (r.receiver_id && r.receiver_id !== r.sender_id) {
-          const msg = { title: fromName, body, type: 'message', url: '/', tag: 'msg:' + r.conversation };
+          const msg = {
+            title: fromName, body, type: 'message', url: '/', tag: 'msg:' + r.conversation,
+            senderName: fromName, text: body, reply: { receiverId: r.sender_id, conversation: r.conversation }
+          };
           await sendToUser(r.receiver_id, msg);
         }
         break;
