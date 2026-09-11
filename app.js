@@ -1262,6 +1262,13 @@ async function restoreDraft(conversationKey){
     if(text){ $('chatInput').value=text; await idbDel('draft:'+conversationKey); }
   }catch(_){}
 }
+/* Push notifications for a conversation stick around in the OS tray until
+   something dismisses them - opening that exact chat here counts as having
+   seen it, so close whatever sw.js left showing under this tag. */
+function clearChatNotifications(tag){
+  if(!('serviceWorker' in navigator))return;
+  navigator.serviceWorker.ready.then(reg=>reg.getNotifications({tag})).then(list=>list.forEach(n=>n.close())).catch(()=>{});
+}
 function buildMessageBase(){
   const row={sender_id:me().id};
   if(chatGroup){ row.group_id=chatGroup.id; row.conversation=chatGroup.id; }
@@ -1274,6 +1281,7 @@ async function openGroup(gid){
   const {data:g,error}=await sb.from('groups').select('*').eq('id',gid).single();
   if(error||!g){ toast('Group not found'); return; }
   chatGroup=g; chatUser=null;
+  clearChatNotifications('grp:'+gid);
   typingRecId=null; lastTypingSent=0; $('typing').style.display='none';
   $('chatAv').innerHTML=groupAvatar(g,38);
   $('chatName').textContent=g.name||'Group';
@@ -2122,6 +2130,7 @@ window.addEventListener('popstate',()=>{
 async function openChat(uid){
   cleanupPresence(); closeChatSearch();
   try{ chatUser=(uid===me().id)?me():await getUser(uid); if(!chatUser) throw new Error('not found'); }catch(e){toast('User not found');return;}
+  clearChatNotifications('msg:'+convKey(me().id,chatUser.id));
   typingRecId=null; lastTypingSent=0; $('typing').style.display='none';
   $('chatAv').innerHTML=avatarHtml(chatUser,38);
   $('chatName').textContent=chatUser.name||chatUser.username;
