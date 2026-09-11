@@ -289,6 +289,15 @@ function show(s){
   ['Feed','Search','Create','Reels','Chats','Profile'].forEach(x=>$('s'+x).classList.toggle('on',x===s));
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
   $('main').classList.toggle('reels',s==='Reels');
+  /* All screens share one scrollable #main. A scroll position left over from
+     whatever screen you were just on (e.g. deep in the Feed) doesn't reset
+     itself - the browser only clamps it to the new (often much shorter)
+     content's max scrollTop, which usually isn't 0. settleReel() then
+     measures "closest reel to viewport center" against that leftover
+     offset and can pick the wrong reel entirely, out of sync with whatever
+     actually rendered at the top. Reset it explicitly so every screen
+     always starts from a known, correct position. */
+  $('main').scrollTop=0;
   if(s==='Feed')loadFeed();
   if(s==='Reels')loadReels(true);
   if(s==='Chats')loadChats();
@@ -389,7 +398,7 @@ function applyVideoCrop(video,crop){
 function postMedia(p){
   if(p.video_url){
     const cropAttr=p.video_crop?` data-crop='${esc(JSON.stringify(p.video_crop))}' onloadedmetadata="applyVideoCrop(this,JSON.parse(this.dataset.crop))"`:'';
-    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} autoplay muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
+    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
   }
   if(Array.isArray(p.photos)&&p.photos.length>1){
     const slides=p.photos.map(url=>`<img class="cslide" loading="lazy" decoding="async" src="${url}" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
@@ -691,7 +700,7 @@ let reelPage=1, reelLoading=false, reelDone=false, reelTok=0, reelStartId=null, 
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
   const st=likeState[p.id]||{count:0,myLikeId:null}; const liked=!!st.myLikeId;
-  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} autoplay loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span></div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
+  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span></div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
 }
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
@@ -760,6 +769,12 @@ function settleReel(){
     if(d<bestDist){bestDist=d;best=r;}
   });
   const v=best.querySelector('video'); if(!v)return;
+  // Defensive: whatever else may have started playing (a stray canplay retry,
+  // a leftover reference, anything), only "best" is allowed to be active.
+  reels.forEach(r=>{
+    const rv=r.querySelector('video');
+    if(rv&&rv!==v&&!rv.paused){ rv.dataset.active='0'; rv.pause(); try{rv.currentTime=0;}catch(_){} }
+  });
   if(v===reelActiveVideo){ if(v.paused)v.play().catch(()=>{}); return; }
   if(reelActiveVideo){ reelActiveVideo.dataset.active='0'; reelActiveVideo.pause(); try{reelActiveVideo.currentTime=0;}catch(_){} }
   reelActiveVideo=v; v.dataset.active='1';
@@ -774,6 +789,11 @@ function setupFeedAutoplay(){
   feedObs=new IntersectionObserver(es=>es.forEach(en=>{
     const v=en.target;
     if(en.isIntersecting&&en.intersectionRatio>0.6){
+      // Defensive: only one feed video should ever be active at a time,
+      // even if two happened to cross the threshold in the same batch.
+      document.querySelectorAll('#sFeed .feedvid').forEach(other=>{
+        if(other!==v&&!other.paused){ other.dataset.active='0'; other.pause(); try{other.currentTime=0;}catch(_){} }
+      });
       v.dataset.active='1';
       if(v.preload!=='auto')v.preload='auto';
       try{v.currentTime=0;}catch(_){}
