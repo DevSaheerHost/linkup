@@ -257,8 +257,25 @@ function enterApp(){
   refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends();
   show('Feed');
   rearm();
-  try{ const h=location.hash||''; const gm=h.match(/gcall=([A-Za-z0-9-]+)/); const cm=h.match(/call=([A-Za-z0-9-]+)/); const um=h.match(/[#&]u=([^&]+)/); if(gm){ history.replaceState(null,'',location.pathname); openGroupCallFromGroup(gm[1]); } else if(cm){ history.replaceState(null,'',location.pathname); openCallFromId(cm[1]); } else if(um){ history.replaceState(null,'',location.pathname); const name=decodeURIComponent(um[1]); setTimeout(()=>openProfileByUsername(name),300); } }catch(_){}
+  handleDeepLinkHash();
 }
+/* Runs once at boot (above) AND on hashchange below - a notification's
+   Answer action navigates an already-open-but-backgrounded tab's hash
+   rather than reloading it, so parsing this only at startup would miss it. */
+function handleDeepLinkHash(){
+  try{
+    const h=location.hash||'';
+    const aa=h.match(/autoanswer=([A-Za-z0-9-]+)/);
+    const gm=h.match(/gcall=([A-Za-z0-9-]+)/);
+    const cm=h.match(/call=([A-Za-z0-9-]+)/);
+    const um=h.match(/[#&]u=([^&]+)/);
+    if(aa){ history.replaceState(null,'',location.pathname); autoAnswerCall(aa[1]); }
+    else if(gm){ history.replaceState(null,'',location.pathname); openGroupCallFromGroup(gm[1]); }
+    else if(cm){ history.replaceState(null,'',location.pathname); openCallFromId(cm[1]); }
+    else if(um){ history.replaceState(null,'',location.pathname); const name=decodeURIComponent(um[1]); setTimeout(()=>openProfileByUsername(name),300); }
+  }catch(_){}
+}
+window.addEventListener('hashchange',()=>{ if(me())handleDeepLinkHash(); });
 let swReg=null;
 function urlB64ToUint8(b64){ const pad='='.repeat((4-b64.length%4)%4); const s=(b64+pad).replace(/-/g,'+').replace(/_/g,'/'); const raw=atob(s); const arr=new Uint8Array(raw.length); for(let i=0;i<raw.length;i++)arr[i]=raw.charCodeAt(i); return arr; }
 async function initPush(){
@@ -1560,6 +1577,14 @@ function startRing(){
 function stopRing(){ clearInterval(ringTimer); ringTimer=null; clearInterval(ringVib); ringVib=null; try{navigator.vibrate&&navigator.vibrate(0);}catch(_){} }
 async function openCallFromId(cid){
   try{ const {data:rec}=await sb.from('calls').select('*').eq('id',cid).single(); if(rec&&rec.callee_id===me().id&&rec.status==='ringing')onIncoming(rec); }catch(e){}
+}
+/* Tapping "Answer" on the OS notification should skip the extra "now also
+   tap Accept inside the app" step. */
+async function autoAnswerCall(cid){
+  try{
+    const {data:rec}=await sb.from('calls').select('*').eq('id',cid).single();
+    if(rec&&rec.callee_id===me().id&&rec.status==='ringing'){ onIncoming(rec); await acceptCall(); }
+  }catch(e){}
 }
 /* ===== GROUP CALLS (mesh, non-trickle) ===== */
 let gcall=null, gLocal=null, gpeers={}, gMic=false, gVid=false, gIncoming=null, gcTimer=null, gcT0=0;
