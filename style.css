@@ -81,7 +81,7 @@
 
   /* create post */
   .create{padding:18px 16px}
-  .drop{width:100%;aspect-ratio:1/1;background:var(--soft);border:1px dashed var(--line);border-radius:12px;display:flex;align-items:center;justify-content:center;color:var(--mut);overflow:hidden;cursor:pointer;margin-bottom:14px}
+  .drop{position:relative;width:100%;aspect-ratio:1/1;background:var(--soft);border:1px dashed var(--line);border-radius:12px;display:flex;align-items:center;justify-content:center;color:var(--mut);overflow:hidden;cursor:pointer;margin-bottom:14px}
   .drop img{width:100%;height:100%;object-fit:cover}
   .create textarea{width:100%;background:var(--soft);border:1px solid var(--line);border-radius:10px;color:var(--txt);padding:12px;font-size:14px;resize:none;margin-bottom:14px}
 
@@ -156,7 +156,14 @@
   .sreacts{position:absolute;left:12px;right:12px;bottom:74px;display:flex;justify-content:space-around;gap:6px;z-index:3}
   .sreactbtn{background:rgba(0,0,0,.45);border:none;border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .12s;flex:0 0 auto}
   .sreactbtn:active{transform:scale(1.35)}
-  .vidwrap{position:relative;line-height:0}
+  .vidwrap{position:relative;line-height:0;aspect-ratio:1/1;overflow:hidden;background:#000}
+  .mpstage{position:relative;width:100%;height:100%}
+  .mpCanvas{position:absolute;top:0;left:0;width:100%;height:100%;touch-action:none;cursor:grab}
+  .mpstrip{position:absolute;left:0;right:0;bottom:0;height:60px;background:rgba(0,0,0,.5);display:flex;gap:6px;align-items:center;padding:0 6px;overflow-x:auto}
+  .mpstrip img{height:44px;width:44px;object-fit:cover;border-radius:8px;flex:0 0 auto;opacity:.45;border:2px solid transparent;cursor:pointer}
+  .mpstrip img.on{opacity:1;border-color:var(--accent)}
+  #vidFrameBox{position:relative;width:100%;height:100%;overflow:hidden;touch-action:none;cursor:grab;background:#000}
+  #vidFrameBox video{position:absolute}
   .mutebtn{position:absolute;right:12px;bottom:12px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.15);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;backdrop-filter:blur(6px)}
   .mutebtn.top{top:14px;bottom:auto;right:14px}
   nav button svg,.hbtns svg,.pacts svg,.att svg,.back svg,.send svg{display:block}
@@ -211,7 +218,6 @@
   #storyCompose{position:fixed;inset:0;background:#000;display:none;flex-direction:column;z-index:82}
   #storyCompose.on{display:flex}
   #storyCompose .scprev{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden}
-  #storyCompose .scprev img{max-width:100%;max-height:100%;object-fit:contain}
   #storyCompose .scbar{display:flex;gap:10px;padding:12px;align-items:center}
   #storyCompose .scbar input{flex:1;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);border-radius:22px;color:#fff;padding:12px 16px;font-size:14px;outline:none}
   #storyCompose .scbar input::placeholder{color:rgba(255,255,255,.75)}
@@ -360,8 +366,6 @@
   .gpollicon{color:var(--accent)}
   .gpollq{font-size:11px;color:var(--mut);max-height:42px;overflow:hidden;line-height:1.3}
   .ccount{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:2px 9px;border-radius:11px;pointer-events:none}
-  .photostrip{display:flex;gap:6px;overflow-x:auto;height:100%;align-items:center;padding:6px}
-  .photostrip img{height:88%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;flex:0 0 auto}
   .gmulti{position:absolute;top:5px;right:5px;color:#fff;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
   .pbtns .morebtn{flex:0 0 46px;display:flex;align-items:center;justify-content:center}
   .qrwrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:24px}
