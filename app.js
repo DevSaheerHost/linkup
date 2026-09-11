@@ -125,6 +125,14 @@ function toggleMuteFor(v){globalMuted=!globalMuted;applyMute();if(!globalMuted&&
    enough data is buffered yet (rejected promise, swallowed by .catch()) -
    this retries once the browser actually reports it's ready to play. */
 function tryAutoplay(v){ if(v.dataset.active==='1') v.play().catch(()=>{}); }
+/* Belt-and-suspenders: some browsers/devices still refuse a muted autoplay
+   call issued with no user interaction at all yet, even though the spec
+   allows it. The very first tap/scroll anywhere in the app "kicks" every
+   video that's supposed to be playing (dataset.active='1') but isn't. */
+function kickActiveVideos(){ document.querySelectorAll('video[data-active="1"]').forEach(v=>{ if(v.paused) v.play().catch(()=>{}); }); }
+document.addEventListener('touchstart',kickActiveVideos,{passive:true});
+document.addEventListener('pointerdown',kickActiveVideos,{passive:true});
+document.addEventListener('scroll',kickActiveVideos,{passive:true,capture:true});
 function muteBurst(tgt){
   if(!tgt)return; const r=tgt.getBoundingClientRect();
   const el=document.createElement('div'); el.className='mutepop'; el.innerHTML=icon(globalMuted?'volumeOff':'volumeOn',44);
@@ -360,7 +368,7 @@ function armFeedPrefetch(){
 }
 function renderFeedTabs(){const t=$('ftabs');if(!t)return;t.innerHTML=`<button class="${feedMode==='all'?'on':''}" onclick="setFeedMode('all')">For You</button><button class="${feedMode==='following'?'on':''}" onclick="setFeedMode('following')">Following</button>`;}
 function setFeedMode(m){feedMode=m;renderFeedTabs();loadFeedPosts(true);}
-$('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
+$('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
 function applyVideoCrop(video,crop){
   if(!crop)return;
   const nw=video.videoWidth,nh=video.videoHeight; if(!nw||!nh)return;
@@ -672,7 +680,6 @@ function openOtherPostMenu(pid,uid,uname){
 }
 
 /* ================= REELS ================= */
-let reelObs=null;
 let reelPage=1, reelLoading=false, reelDone=false, reelTok=0, reelStartId=null, reelBefore='', reelSeek=0;
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
@@ -688,7 +695,7 @@ function openReelAt(pid,t){ reelStartId=pid; reelSeek=t||0; show('Reels'); }
 async function loadReels(reset){
   const box=$('sReels'); if(!box)return;
   if(!reset&&(reelLoading||reelDone))return;
-  if(reset){ reelPage=1; reelDone=false; reelTok++; reelBefore=''; box.innerHTML=skReel(); }
+  if(reset){ reelPage=1; reelDone=false; reelTok++; reelBefore=''; reelActiveVideo=null; clearTimeout(reelScrollT); box.innerHTML=skReel(); }
   const tok=reelTok; reelLoading=true; let startedId=null;
   try{
     if(reset){
@@ -724,23 +731,35 @@ async function loadReels(reset){
   }catch(e){ if(reset && !box.querySelector('.reel'))box.innerHTML='<div class="empty">Could not load reels</div>'; }
   reelLoading=false;
 }
+/* Reels switch on scroll-SETTLE, not on scroll progress: while the user is
+   mid-swipe nothing changes, so there's no flicker/replay as a reel drags
+   partway into view. Only once scrolling actually stops do we pause
+   whichever reel was playing and start the one now centered. */
+let reelActiveVideo=null, reelScrollT=null;
 function setupReelAutoplay(){
-  if(reelObs)reelObs.disconnect();
-  reelObs=new IntersectionObserver(es=>es.forEach(en=>{
-    const v=en.target;
-    if(en.isIntersecting&&en.intersectionRatio>0.6){
-      v.dataset.active='1';
-      if(v.preload!=='auto')v.preload='auto';
-      if(v.dataset.noreset){delete v.dataset.noreset;}else{try{v.currentTime=0;}catch(_){}}
-      v.play().catch(()=>{});
-      const rl=v.closest('.reel');const pid=rl?rl.id.replace('reel_',''):'';if(pid){registerView(pid);fillViews(pid);}
-    }else{
-      v.dataset.active='0';
-      v.pause();try{v.currentTime=0;}catch(_){}
-    }
-  }),{root:$('main'),threshold:[0,0.6,1]});
-  document.querySelectorAll('.reelvid').forEach(v=>{v.muted=globalMuted;reelObs.observe(v);});
+  document.querySelectorAll('.reelvid').forEach(v=>{v.muted=globalMuted;});
   applyMute();
+  settleReel();
+}
+function onReelsScroll(){ clearTimeout(reelScrollT); reelScrollT=setTimeout(settleReel,120); }
+function settleReel(){
+  const box=$('main');
+  const reels=[...box.querySelectorAll('.reel')];
+  if(!reels.length)return;
+  const boxRect=box.getBoundingClientRect(), center=boxRect.top+boxRect.height/2;
+  let best=null,bestDist=Infinity;
+  reels.forEach(r=>{
+    const rc=r.getBoundingClientRect(), d=Math.abs((rc.top+rc.height/2)-center);
+    if(d<bestDist){bestDist=d;best=r;}
+  });
+  const v=best.querySelector('video'); if(!v)return;
+  if(v===reelActiveVideo){ if(v.paused)v.play().catch(()=>{}); return; }
+  if(reelActiveVideo){ reelActiveVideo.dataset.active='0'; reelActiveVideo.pause(); try{reelActiveVideo.currentTime=0;}catch(_){} }
+  reelActiveVideo=v; v.dataset.active='1';
+  if(v.preload!=='auto')v.preload='auto';
+  if(v.dataset.noreset){delete v.dataset.noreset;}else{try{v.currentTime=0;}catch(_){}}
+  v.play().catch(()=>{});
+  const pid=best.id.replace('reel_','');if(pid){registerView(pid);fillViews(pid);}
 }
 let feedObs=null;
 function setupFeedAutoplay(){
