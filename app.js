@@ -360,7 +360,7 @@ let feedPage=1, feedLoading=false, feedDone=false, feedFollowIds=null, feedToken
 async function loadFeedPosts(reset){
   const box=$('feedPosts'); if(!box)return;
   if(!reset && (feedLoading||feedDone)) return;
-  if(reset){ feedPage=1; feedDone=false; feedFollowIds=null; feedToken++; box.innerHTML=skFeed(3); }
+  if(reset){ feedPage=1; feedDone=false; feedFollowIds=null; feedToken++; feedActiveVideo=null; clearTimeout(feedScrollT); box.innerHTML=skFeed(3); }
   const myTok=feedToken; feedLoading=true;
   try{
     if(reset && feedMode==='following'){
@@ -413,7 +413,7 @@ function armFeedPrefetch(){
 }
 function renderFeedTabs(){const t=$('ftabs');if(!t)return;t.innerHTML=`<button class="${feedMode==='all'?'on':''}" onclick="setFeedMode('all')">For You</button><button class="${feedMode==='following'?'on':''}" onclick="setFeedMode('following')">Following</button>`;}
 function setFeedMode(m){feedMode=m;renderFeedTabs();loadFeedPosts(true);}
-$('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
+$('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ onFeedScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
 function applyVideoCrop(video,crop){
   if(!crop)return;
   const nw=video.videoWidth,nh=video.videoHeight; if(!nw||!nh)return;
@@ -427,7 +427,7 @@ function applyVideoCrop(video,crop){
 function postMedia(p){
   if(p.video_url){
     const cropAttr=p.video_crop?` data-crop='${esc(JSON.stringify(p.video_crop))}' onloadedmetadata="applyVideoCrop(this,JSON.parse(this.dataset.crop))"`:'';
-    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} autoplay muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
+    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
   }
   if(Array.isArray(p.photos)&&p.photos.length>1){
     const slides=p.photos.map(url=>`<img class="cslide blur-load" loading="lazy" decoding="async" src="${url}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
@@ -816,28 +816,42 @@ function settleReel(){
   v.play().catch(()=>{});
   const pid=best.id.replace('reel_','');if(pid){registerView(pid);fillViews(pid);}
 }
-let feedObs=null;
+/* Feed videos settle the same way reels do: nearest-to-viewport-center once
+   scrolling actually stops, not an IntersectionObserver ratio threshold. The
+   old ratio approach (isIntersecting && ratio>0.6) paused videos almost
+   instantly on real devices - a post's header+caption+action row commonly
+   leaves the video's own box under 60% visible even when it's the top post
+   right after Feed opens, so the observer's first callback would fire,
+   decide "not visible enough", and pause whatever had just started via the
+   native autoplay attribute a frame earlier. */
+let feedActiveVideo=null, feedScrollT=null;
 function setupFeedAutoplay(){
-  if(feedObs)feedObs.disconnect();
-  feedObs=new IntersectionObserver(es=>es.forEach(en=>{
-    const v=en.target;
-    if(en.isIntersecting&&en.intersectionRatio>0.6){
-      // Defensive: only one feed video should ever be active at a time,
-      // even if two happened to cross the threshold in the same batch.
-      document.querySelectorAll('#sFeed .feedvid').forEach(other=>{
-        if(other!==v&&!other.paused){ other.dataset.active='0'; other.pause(); try{other.currentTime=0;}catch(_){} }
-      });
-      v.dataset.active='1';
-      if(v.preload!=='auto')v.preload='auto';
-      try{v.currentTime=0;}catch(_){}
-      v.play().catch(()=>{});
-    }else{
-      v.dataset.active='0';
-      v.pause();try{v.currentTime=0;}catch(_){}
-    }
-  }),{root:$('main'),threshold:[0,0.6,1]});
-  document.querySelectorAll('#sFeed .feedvid').forEach(v=>{v.muted=globalMuted;feedObs.observe(v);});
+  document.querySelectorAll('#sFeed .feedvid').forEach(v=>{v.muted=globalMuted;});
   applyMute();
+  settleFeed();
+}
+function onFeedScroll(){ clearTimeout(feedScrollT); feedScrollT=setTimeout(settleFeed,120); }
+function settleFeed(){
+  const box=$('main');
+  const vids=[...document.querySelectorAll('#sFeed .feedvid')];
+  if(!vids.length)return;
+  const boxRect=box.getBoundingClientRect(), center=boxRect.top+boxRect.height/2;
+  let best=null,bestDist=Infinity;
+  vids.forEach(v=>{
+    const r=v.getBoundingClientRect();
+    const visible=Math.min(r.bottom,boxRect.bottom)-Math.max(r.top,boxRect.top);
+    if(visible/r.height<0.3)return; // barely on screen - not a real candidate
+    const d=Math.abs((r.top+r.height/2)-center);
+    if(d<bestDist){bestDist=d;best=v;}
+  });
+  vids.forEach(v=>{
+    if(v!==best&&!v.paused){ v.dataset.active='0'; v.pause(); try{v.currentTime=0;}catch(_){} }
+  });
+  if(!best){ feedActiveVideo=null; return; }
+  if(best===feedActiveVideo){ if(best.paused)best.play().catch(()=>{}); return; }
+  feedActiveVideo=best; best.dataset.active='1';
+  if(best.preload!=='auto')best.preload='auto';
+  best.play().catch(()=>{});
 }
 
 /* ================= CREATE POST (pinch-to-zoom crop + video reframe) ================= */
