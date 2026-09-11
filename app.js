@@ -119,7 +119,18 @@ function applyMute(){
   document.querySelectorAll('.feedvid,.reelvid').forEach(v=>{v.muted=globalMuted;});
   document.querySelectorAll('.mutebtn').forEach(b=>{b.innerHTML=icon(globalMuted?'volumeOff':'volumeOn',20);});
 }
-function toggleMuteFor(v){globalMuted=!globalMuted;applyMute();if(!globalMuted&&v){v.muted=false;if(v.paused)v.play().catch(()=>{});}}
+function toggleMuteFor(v){globalMuted=!globalMuted;applyMute();if(!globalMuted&&v){v.muted=false;if(v.paused)v.play().catch(()=>{});}muteBurst(v);}
+/* IntersectionObserver marks a video active/inactive via dataset.active;
+   `.play()` right when a video scrolls into view can silently fail if not
+   enough data is buffered yet (rejected promise, swallowed by .catch()) -
+   this retries once the browser actually reports it's ready to play. */
+function tryAutoplay(v){ if(v.dataset.active==='1') v.play().catch(()=>{}); }
+function muteBurst(tgt){
+  if(!tgt)return; const r=tgt.getBoundingClientRect();
+  const el=document.createElement('div'); el.className='mutepop'; el.innerHTML=icon(globalMuted?'volumeOff':'volumeOn',44);
+  el.style.left=(r.left+r.width/2)+'px'; el.style.top=(r.top+r.height/2)+'px';
+  document.body.appendChild(el); setTimeout(()=>el.remove(),720);
+}
 
 /* ================= AUTH UI ================= */
 let signupMode=false, pickedAvatar=null;
@@ -363,7 +374,7 @@ function applyVideoCrop(video,crop){
 function postMedia(p){
   if(p.video_url){
     const cropAttr=p.video_crop?` data-crop='${esc(JSON.stringify(p.video_crop))}' onloadedmetadata="applyVideoCrop(this,JSON.parse(this.dataset.crop))"`:'';
-    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} muted loop playsinline preload="metadata"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
+    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} autoplay muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
   }
   if(Array.isArray(p.photos)&&p.photos.length>1){
     const slides=p.photos.map(url=>`<img class="cslide" loading="lazy" decoding="async" src="${url}" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
@@ -666,7 +677,7 @@ let reelPage=1, reelLoading=false, reelDone=false, reelTok=0, reelStartId=null, 
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
   const st=likeState[p.id]||{count:0,myLikeId:null}; const liked=!!st.myLikeId;
-  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} loop muted playsinline preload="metadata"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span></div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
+  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} autoplay loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span></div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
 }
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
@@ -715,14 +726,37 @@ async function loadReels(reset){
 }
 function setupReelAutoplay(){
   if(reelObs)reelObs.disconnect();
-  reelObs=new IntersectionObserver(es=>es.forEach(en=>{const v=en.target;if(en.isIntersecting&&en.intersectionRatio>0.6){if(v.dataset.noreset){delete v.dataset.noreset;}else{try{v.currentTime=0;}catch(_){}}v.play().catch(()=>{});const rl=v.closest('.reel');const pid=rl?rl.id.replace('reel_',''):'';if(pid){registerView(pid);fillViews(pid);}}else{v.pause();try{v.currentTime=0;}catch(_){}}}),{root:$('main'),threshold:[0,0.6,1]});
+  reelObs=new IntersectionObserver(es=>es.forEach(en=>{
+    const v=en.target;
+    if(en.isIntersecting&&en.intersectionRatio>0.6){
+      v.dataset.active='1';
+      if(v.preload!=='auto')v.preload='auto';
+      if(v.dataset.noreset){delete v.dataset.noreset;}else{try{v.currentTime=0;}catch(_){}}
+      v.play().catch(()=>{});
+      const rl=v.closest('.reel');const pid=rl?rl.id.replace('reel_',''):'';if(pid){registerView(pid);fillViews(pid);}
+    }else{
+      v.dataset.active='0';
+      v.pause();try{v.currentTime=0;}catch(_){}
+    }
+  }),{root:$('main'),threshold:[0,0.6,1]});
   document.querySelectorAll('.reelvid').forEach(v=>{v.muted=globalMuted;reelObs.observe(v);});
   applyMute();
 }
 let feedObs=null;
 function setupFeedAutoplay(){
   if(feedObs)feedObs.disconnect();
-  feedObs=new IntersectionObserver(es=>es.forEach(en=>{const v=en.target;if(en.isIntersecting&&en.intersectionRatio>0.6){try{v.currentTime=0;}catch(_){}v.play().catch(()=>{});}else{v.pause();try{v.currentTime=0;}catch(_){}}}),{root:$('main'),threshold:[0,0.6,1]});
+  feedObs=new IntersectionObserver(es=>es.forEach(en=>{
+    const v=en.target;
+    if(en.isIntersecting&&en.intersectionRatio>0.6){
+      v.dataset.active='1';
+      if(v.preload!=='auto')v.preload='auto';
+      try{v.currentTime=0;}catch(_){}
+      v.play().catch(()=>{});
+    }else{
+      v.dataset.active='0';
+      v.pause();try{v.currentTime=0;}catch(_){}
+    }
+  }),{root:$('main'),threshold:[0,0.6,1]});
   document.querySelectorAll('#sFeed .feedvid').forEach(v=>{v.muted=globalMuted;feedObs.observe(v);});
   applyMute();
 }
