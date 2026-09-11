@@ -1,8 +1,8 @@
 /* ================= CONFIG ================= */
 const SUPABASE_URL = 'https://prfdrpmnftegbiaglugh.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_es3WrqJR1IuFySgBAV_-2g_f23h-alp';
-// Paste your VAPID PUBLIC key here after running: npx web-push generate-vapid-keys
-const VAPID_PUBLIC='BPLpuSaEpdNinEn-atyqiVIbbo7wIrbX5FjO4iPVdo2czZADIpVYHjwcd9V3k9Oxse6HI6cFaPNIsYKOcx-BMB8';
+// Must match the VAPID_PUBLIC secret set on the push-notify Edge Function.
+const VAPID_PUBLIC='BABQYQDJkhd8chYRiDZCqemPnc1VF0Y7AmAy7O1OhTK4IGGhWmxBCHh0Ezlrpfj06L1ke6ppSa0PE3qwQm1wutk';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /* ================= HELPERS ================= */
@@ -269,6 +269,17 @@ async function subscribePush(announce){
   try{
     if(!swReg)swReg=await navigator.serviceWorker.ready;
     let sub=await swReg.pushManager.getSubscription();
+    if(sub){
+      /* A subscription is permanently tied to the VAPID public key it was
+         created with. If that key ever changes (key lost/rotated), the old
+         subscription silently fails forever unless we detect the mismatch
+         and re-subscribe under the current key. */
+      try{
+        const cur=new Uint8Array(sub.options.applicationServerKey);
+        const want=urlB64ToUint8(VAPID_PUBLIC);
+        if(cur.length!==want.length||!cur.every((b,i)=>b===want[i])){ await sub.unsubscribe(); sub=null; }
+      }catch(_){}
+    }
     if(!sub) sub=await swReg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(VAPID_PUBLIC)});
     const row={user_id:me().id,endpoint:sub.endpoint,sub:sub.toJSON()};
     const {data:ex}=await sb.from('push_subs').select('id').eq('endpoint',sub.endpoint).maybeSingle();
