@@ -201,7 +201,7 @@ async function doAuth(){
       const username=$('suUser').value.trim().toLowerCase().replace(/\s+/g,'');
       if(!username){throw new Error('Pick a username');}
       const name=$('suName').value.trim()||username;
-      const {data,error}=await sb.auth.signUp({email,password:pass,options:{data:{username,name}}});
+      const {data,error}=await sb.auth.signUp({email,password:pass,options:{data:{username,name},emailRedirectTo:location.origin+location.pathname}});
       if(error) throw error;
       if(!data.session){
         $('authErr').textContent='Account created — check your email to confirm, then log in.';
