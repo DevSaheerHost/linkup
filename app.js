@@ -278,6 +278,13 @@ async function subscribePush(announce){
   }catch(e){ if(announce)toast('Subscribe failed: '+sbErr(e)); }
 }
 function show(s){
+  /* Switching screens only toggles CSS (display:none on the old one) - a
+     hidden <video> keeps playing (audio included) until the
+     IntersectionObserver/scroll-settle logic eventually notices it's no
+     longer visible, which isn't instant. Pause everything synchronously
+     right here so there's never a window where two videos' audio overlaps. */
+  document.querySelectorAll('.feedvid,.reelvid').forEach(v=>{ try{v.pause();}catch(_){} v.dataset.active='0'; });
+  reelActiveVideo=null;
   currentScreen=s;
   ['Feed','Search','Create','Reels','Chats','Profile'].forEach(x=>$('s'+x).classList.toggle('on',x===s));
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
