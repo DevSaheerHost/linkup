@@ -22,7 +22,11 @@ self.addEventListener('push', event => {
       await self.registration.showNotification(data.title || 'Incoming call', {
         body: data.body || '',
         icon: data.icon || '/icon-192.png',
-        badge: data.badge || '/icon-192.png',
+        /* Android renders the badge as a silhouette: it reads only the alpha
+           channel and fills it flat white/black itself, ignoring color - a
+           full-color icon there shows up as a solid black square. This must
+           be a plain white glyph on a transparent background. */
+        badge: data.badge || '/badge-96.png',
         tag: data.tag || 'call',
         renotify: true,
         requireInteraction: true,
@@ -44,7 +48,7 @@ self.addEventListener('push', event => {
     await self.registration.showNotification(data.title || 'LinkUp', {
       body: data.body || '',
       icon: data.icon || '/icon-192.png',
-      badge: data.badge || '/icon-192.png',
+      badge: data.badge || '/badge-96.png',
       tag: data.tag || undefined,
       data: { url: data.url || '/' }
     });
