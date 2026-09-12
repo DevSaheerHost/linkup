@@ -256,7 +256,7 @@ function enterApp(){
   applyStaticIcons();
   $('navAv').outerHTML=avatarHtml(me(),26,'nav-av').replace('class="av','id="navAv" class="av');
   if(!subbed){subscribeRealtime();subscribeCalls();subscribeGroupSig();subscribeGroupCalls();subscribePollVotes();subbed=true;}
-  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends(); loadFollowing();
+  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends(); loadFollowing(); touchOpenStreak();
   show('Feed');
   rearm();
   handleDeepLinkHash();
@@ -1329,7 +1329,7 @@ async function loadProfile(uid){
         :`<button id="followBtn" class="${followId?'':'grad'}" ${followId?'':'style="color:#fff"'} onclick="toggleFollow('${uid}','${followId||''}')">${followId?'Following':'Follow'}</button><button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
     box.innerHTML=`<div class="prof">
       <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div onclick="openFollowList('${uid}','followers')" style="cursor:pointer"><b>${followersN}</b><span>followers</span></div><div onclick="openFollowList('${uid}','following')" style="cursor:pointer"><b>${followingN}</b><span>following</span></div></div></div>
-      <div class="pname">${esc(u.name||u.username)}${vbadge(u)}</div>
+      <div class="pname">${esc(u.name||u.username)}${vbadge(u)}${isMe?openStreakHtml(u):''}</div>
       <div class="mut" style="color:var(--mut);font-size:13px;margin-bottom:6px">@${esc(u.username)}</div>
       ${(!isMe&&!blocked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
       <div class="pbio">${esc(u.bio||'')}</div>
@@ -1468,6 +1468,27 @@ function filterChats(q){
 }
 function callSnip(m){const p=(m.call||'').split(':'),k=p[0]||'audio',st=p[1]||'ended';if(st==='missed')return 'Missed '+(k==='video'?'video ':'')+'call';if(st==='declined')return 'Call declined';return (k==='video'?'Video':'Voice')+' call';}
 function dmRow(id,u,m,uc){const snip=m.call?callSnip(m):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'');const mine=(m.sender_id===me().id&&!m.call)?'You: ':'';const pin=getPinned().has(id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const stk=streakHtml(id);const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:`<div class="mut">${timeAgo(m.created_at)}</div>`;return `<div class="row" data-id="${id}" data-name="${esc(((u.username||'')+' '+(u.name||'')).toLowerCase())}" onclick="openChat('${id}')"><div class="cav">${avatarHtml(u,48)}${isOnline(u)?'<span class="cdot"></span>':''}</div><div class="last"><div class="nm">${esc(u.username)}${stk}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${mine}${snip}</div></div>${right}</div>`;}
+/* Daily open streak. Intentionally low-key: milestones get a toast on the
+   day they're hit and the count shows on your own profile, but breaking a
+   streak says nothing at all - it just starts again at 1. */
+const OPEN_MILESTONES=[7,30,100,365];
+async function touchOpenStreak(){
+  try{
+    const {data,error}=await sb.rpc('touch_open_streak');
+    if(error) throw error;
+    const row=Array.isArray(data)?data[0]:data; if(!row)return;
+    if(myProfile){ myProfile.streak_days=row.streak; }
+    if(row.bumped&&OPEN_MILESTONES.includes(row.streak)){
+      setTimeout(()=>toast(row.streak+' days in a row 🔥'),1200);
+    }
+  }catch(e){}
+}
+function openStreakHtml(u){
+  const n=(u&&u.streak_days)||0;
+  if(n<2)return '';
+  return `<span class="streak" title="${n}-day streak">${icon('rfire',13,{fill:'currentColor'})}<i>${n}</i></span>`;
+}
+
 /* DM streaks: consecutive days you and one other person BOTH messaged.
    Shown from 2 days - a single day isn't a streak, and showing "1" on
    every new conversation would make the flame meaningless. */
