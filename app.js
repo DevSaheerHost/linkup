@@ -766,7 +766,7 @@ function openUserMenu(uid){
     `<button onclick="closeActMenu();reportTarget('user','${uid}')">Report user</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',true)">${blocked?'Unblock user':'Block user'}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
-  $('actMenuWrap').classList.add('on');
+  $('actMenuWrap').classList.add('on');rearm();
 }
 function openOtherPostMenu(pid,uid,uname){
   const blocked=blockedIds.has(uid);
@@ -774,7 +774,7 @@ function openOtherPostMenu(pid,uid,uname){
     `<button onclick="closeActMenu();reportTarget('post','${pid}')">Report post</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',false)">${blocked?'Unblock @'+esc(uname):'Block @'+esc(uname)}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
-  $('actMenuWrap').classList.add('on');
+  $('actMenuWrap').classList.add('on');rearm();
 }
 
 /* ================= REELS ================= */
@@ -1299,7 +1299,7 @@ function openChatRowMenu(id){
     `<button onclick="closeActMenu();togglePin('${id}')">${pinned?'Unpin chat':'Pin to top'}</button>`+
     `<button onclick="closeActMenu();toggleMute('${id}')">${muted?'Unmute':'Mute'}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
-  $('actMenuWrap').classList.add('on');
+  $('actMenuWrap').classList.add('on');rearm();
 }
 let chatLPTimer=null, suppressChatClick=false;
 $('sChats').addEventListener('pointerdown',e=>{ const row=e.target.closest('.row[data-id]'); if(!row)return; clearTimeout(chatLPTimer); chatLPTimer=setTimeout(()=>{ suppressChatClick=true; openChatRowMenu(row.getAttribute('data-id')); },500); });
@@ -1426,7 +1426,7 @@ async function openGroup(gid){
   restoreDraft(gid);
 }
 function openNewGroup(){
-  $('ngName').value=''; $('newGroup').classList.add('on');
+  $('ngName').value=''; $('newGroup').classList.add('on');rearm();
   const body=$('ngMembers'); body.innerHTML=skRows(5);
   (async()=>{
     let ids=[];
@@ -1458,7 +1458,7 @@ let giGroup=null, addMemGid=null;
 async function openGroupInfo(gid){
   const {data:g,error}=await sb.from('groups').select('*').eq('id',gid).single();
   if(error||!g){ toast('Group not found'); return; }
-  giGroup=g; $('groupInfo').classList.add('on'); renderGroupInfo(g);
+  giGroup=g; $('groupInfo').classList.add('on'); rearm(); renderGroupInfo(g);
 }
 function closeGroupInfo(){ $('groupInfo').classList.remove('on'); }
 async function renderGroupInfo(g){
@@ -1498,7 +1498,7 @@ async function leaveGroup(){
   }catch(e){ toast('Failed: '+sbErr(e)); }
 }
 function openAddMembers(){
-  if(!giGroup)return; addMemGid=giGroup.id; $('addMem').classList.add('on');
+  if(!giGroup)return; addMemGid=giGroup.id; $('addMem').classList.add('on');rearm();
   const box=$('amList'); box.innerHTML=skRows(5);
   (async()=>{
     const cur=new Set(await getGroupMemberIds(giGroup.id));
@@ -1877,7 +1877,7 @@ function openStoryCompose(f){
   if(storyComposeUrl)URL.revokeObjectURL(storyComposeUrl);
   storyComposeUrl=URL.createObjectURL(f);
   $('scTags').value='';
-  $('storyCompose').classList.add('on');
+  $('storyCompose').classList.add('on');rearm();
   const img=new Image();
   img.onload=()=>{
     const box=$('scPrev'), bw=box.clientWidth||360, bh=box.clientHeight||640;
@@ -1913,7 +1913,7 @@ function openStory(uid,startIdx){
   svList=(storyGroups[uid]||[]).slice(); if(!svList.length){toast('No active story');return;}
   svUser=storyUsers[uid]||{username:'user',id:uid};
   svIdx=(startIdx==null)?0:Math.max(0,Math.min(startIdx,svList.length-1));
-  buildStoryView(); $('storyView').classList.add('on'); playStory();
+  buildStoryView(); $('storyView').classList.add('on'); rearm(); playStory();
 }
 function adjStoryUser(dir){
   if(!svUser)return null;
@@ -1976,7 +1976,7 @@ async function delStory(){ const s=svList[svIdx]; if(!s)return; try{ await sb.fr
 async function updateSeen(storyId){ const el=$('svSeen'); if(!el)return; el.dataset.story=storyId; el.textContent='Seen by …'; try{ const {count}=await sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId); el.textContent='Seen by '+(count||0); }catch(e){ el.textContent=''; } }
 async function openSeenList(){
   const el=$('svSeen'); const sid=el&&el.dataset.story; if(!sid)return; clearTimeout(svTimer);
-  $('listView').classList.add('on'); $('listTitle').textContent='Viewers'; const body=$('listBody'); body.innerHTML=skRows(8);
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Viewers'; const body=$('listBody'); body.innerHTML=skRows(8);
   try{
     const {data:rows,error}=await sb.from('story_views').select('viewer_id').eq('story_id',sid);
     if(error) throw error;
@@ -1991,7 +1991,7 @@ async function toggleFollow(uid,followId){
   try{ if(followId){await sb.from('follows').delete().eq('id',followId);} else {await sb.from('follows').insert({follower_id:me().id,following_id:uid});notify('follow',uid);} loadProfile(uid); }
   catch(e){ toast('Follow failed: '+sbErr(e)); if(btn)btn.disabled=false; }
 }
-function openPostMenu(pid){pmId=pid;$('pmRegen').style.display=postVideo[pid]?'block':'none';$('postMenuWrap').classList.add('on');}
+function openPostMenu(pid){pmId=pid;$('pmRegen').style.display=postVideo[pid]?'block':'none';$('postMenuWrap').classList.add('on');rearm();}
 function closePostMenu(){$('postMenuWrap').classList.remove('on');}
 $('pmCancel').onclick=closePostMenu;
 $('postMenuWrap').onclick=e=>{if(e.target.id==='postMenuWrap')closePostMenu();};
@@ -2065,7 +2065,7 @@ async function doForwardTo(type,id){
 }
 async function openShare(pid){
   sharePostId=pid;
-  $('listView').classList.add('on'); $('listTitle').textContent='Share to';
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Share to';
   const body=$('listBody'); body.innerHTML=skRows(8);
   try{
     await loadMyGroups();
@@ -2092,7 +2092,7 @@ async function doShare(uid){
   catch(e){ try{ await sb.from('messages').insert({sender_id:me().id,receiver_id:uid,conversation:key,text:'Shared a post'}); toast('Shared'); }catch(e2){ toast('Share failed: '+sbErr(e2)); } }
 }
 let capOnSave=null;
-function openTextEditor(title,val,onSave){$('capTitle').textContent=title;$('capText').value=val||'';capOnSave=onSave;$('capWrap').classList.add('on');setTimeout(()=>$('capText').focus(),50);}
+function openTextEditor(title,val,onSave){$('capTitle').textContent=title;$('capText').value=val||'';capOnSave=onSave;$('capWrap').classList.add('on');rearm();setTimeout(()=>$('capText').focus(),50);}
 $('pmEdit').onclick=()=>{const id=pmId;closePostMenu();if(!id)return;openTextEditor('Edit caption',postCaption[id],async v=>{try{await sb.from('posts').update({caption:v}).eq('id',id);postCaption[id]=v;toast('Caption updated');if($('postView').classList.contains('on')&&pvId)openPostView(pvId);else loadFeedPosts(true);}catch(e){toast('Update failed');}});};
 $('capCancel').onclick=()=>{$('capWrap').classList.remove('on');capOnSave=null;};
 $('capWrap').onclick=e=>{if(e.target.id==='capWrap'){$('capWrap').classList.remove('on');capOnSave=null;}};
@@ -2164,7 +2164,7 @@ async function refreshNotif(){
 }
 function closeNotif(){$('notif').classList.remove('on');}
 async function openNotif(){
-  $('notif').classList.add('on');
+  $('notif').classList.add('on');rearm();
   const body=$('notifBody'); body.innerHTML=skRows(8);
   try{
     const {data:items,error}=await sb.from('notifications').select('*').eq('user_id',me().id).order('created_at',{ascending:false}).limit(80);
@@ -2187,7 +2187,7 @@ async function openNotif(){
 }
 function closeList(){$('listView').classList.remove('on'); if($('storyView').classList.contains('on'))playStory();}
 async function openFollowList(uid,mode){
-  $('listView').classList.add('on'); $('listTitle').textContent=mode==='followers'?'Followers':'Following';
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent=mode==='followers'?'Followers':'Following';
   const body=$('listBody'); body.innerHTML=skRows(8);
   try{
     const matchField=mode==='followers'?'following_id':'follower_id';
@@ -2202,7 +2202,7 @@ async function openFollowList(uid,mode){
 $('notifBack').onclick=closeNotif;
 $('listBack').onclick=closeList;
 async function openPostView(pid){
-  $('postView').classList.add('on');
+  $('postView').classList.add('on');rearm();
   const body=$('postViewBody'); body.innerHTML=skPost();
   try{
     const {data:p,error}=await sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)').eq('id',pid).single();
@@ -2266,6 +2266,7 @@ async function openChat(uid){
   $('chatAv').onclick=null; $('chatName').onclick=null;
   $('callBtns').style.display='flex';
   $('chat').style.display='flex';
+  rearm();
   startPresence();
   const body=$('chatBody');body.innerHTML=skChat();
   try{
@@ -2323,7 +2324,7 @@ function bubble(m){
 function appendBubble(m){const b=$('chatBody');b.insertAdjacentHTML('beforeend',bubble(m));hydrateCards(b);b.scrollTop=b.scrollHeight;}
 function closeChat(){ if(mediaRec||recStream)cancelRec(); cleanupPresence(); cancelReply(); closeChatSearch(); $('chat').style.display='none'; chatUser=null; chatGroup=null; clearChatImg(); if(currentScreen==='Chats')loadChats(); }
 let csMatches=[], csIdx=-1;
-function toggleChatSearch(){ const bar=$('chatSearchBar'); if(bar.style.display==='flex'){ closeChatSearch(); } else { bar.style.display='flex'; const i=$('chatSearchMsg'); i.value=''; $('csCount').textContent=''; setTimeout(()=>i.focus(),30); } }
+function toggleChatSearch(){ const bar=$('chatSearchBar'); if(bar.style.display==='flex'){ closeChatSearch(); } else { bar.style.display='flex'; rearm(); const i=$('chatSearchMsg'); i.value=''; $('csCount').textContent=''; setTimeout(()=>i.focus(),30); } }
 function closeChatSearch(){ const bar=$('chatSearchBar'); if(bar)bar.style.display='none'; const i=$('chatSearchMsg'); if(i)i.value=''; clearChatSearch(); }
 function clearChatSearch(){ csMatches.forEach(el=>el.classList.remove('searchhit','searchcur')); csMatches=[]; csIdx=-1; const c=$('csCount'); if(c)c.textContent=''; }
 function runChatSearch(q){
@@ -2359,7 +2360,7 @@ function openMsgMenu(id){
   if(mine)btns+=`<button class="danger" onclick="doUnsend('${id}')">Unsend message</button>`;
   btns+=`<button onclick="closeMsgMenu()">Cancel</button>`;
   $('msgMenu').innerHTML=rrow+btns;
-  $('msgMenuWrap').classList.add('on');
+  $('msgMenuWrap').classList.add('on');rearm();
 }
 function closeMsgMenu(){menuMsgId=null;$('msgMenuWrap').classList.remove('on');}
 $('msgMenuWrap').onclick=e=>{if(e.target.id==='msgMenuWrap')closeMsgMenu();};
