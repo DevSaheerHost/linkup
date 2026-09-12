@@ -882,14 +882,29 @@ let mediaKind=null, postVideoFile=null, postPhotos=[];
    state so multiple instances can coexist (one per photo, one per story). */
 function makeImageCropper(canvas,img,W,H){
   canvas.width=W; canvas.height=H;
-  const state={zoom:1,cx:img.naturalWidth/2,cy:img.naturalHeight/2,cover:Math.max(W/img.naturalWidth,H/img.naturalHeight),W,H};
+  /* Base scale is "contain" (Math.min), not "cover" - at zoom=1 (the
+     default nobody changes unless they deliberately pinch/zoom) this shows
+     the whole photo letterboxed instead of silently cropping it to fill
+     the square, matching the same fix applied to video posts. Unlike the
+     video reframe (a CSS transform on a live element, which always fills
+     its box), this draws into a canvas that gets re-encoded as the actual
+     uploaded file - so letterboxing here means computing a smaller,
+     centered destination rect, not just swapping which axis fills. */
+  const state={zoom:1,cx:img.naturalWidth/2,cy:img.naturalHeight/2,cover:Math.min(W/img.naturalWidth,H/img.naturalHeight),W,H};
+  function frame(total,dstW,dstH){
+    const rawSw=dstW/total, rawSh=dstH/total;
+    const sw=Math.min(img.naturalWidth,rawSw), sh=Math.min(img.naturalHeight,rawSh);
+    state.cx = sw<img.naturalWidth ? Math.max(sw/2,Math.min(img.naturalWidth-sw/2,state.cx)) : img.naturalWidth/2;
+    state.cy = sh<img.naturalHeight ? Math.max(sh/2,Math.min(img.naturalHeight-sh/2,state.cy)) : img.naturalHeight/2;
+    const dw=sw*total, dh=sh*total;
+    return { sx:state.cx-sw/2, sy:state.cy-sh/2, sw, sh, dx:(dstW-dw)/2, dy:(dstH-dh)/2, dw, dh };
+  }
   function draw(){
     const ctx=canvas.getContext('2d');
-    const total=state.cover*state.zoom, sw=state.W/total, sh=state.H/total, hw=sw/2, hh=sh/2;
-    state.cx=Math.max(hw,Math.min(img.naturalWidth-hw,state.cx));
-    state.cy=Math.max(hh,Math.min(img.naturalHeight-hh,state.cy));
+    const f=frame(state.cover*state.zoom,state.W,state.H);
     ctx.clearRect(0,0,state.W,state.H);
-    ctx.drawImage(img,state.cx-hw,state.cy-hh,sw,sh,0,0,state.W,state.H);
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,state.W,state.H);
+    ctx.drawImage(img,f.sx,f.sy,f.sw,f.sh,f.dx,f.dy,f.dw,f.dh);
   }
   function setZoom(z){ state.zoom=Math.max(1,Math.min(4,z)); draw(); }
   bindPinchPanZoom(canvas,{
@@ -902,8 +917,11 @@ function makeImageCropper(canvas,img,W,H){
     exportBlob(outW,outH,quality){
       return new Promise(res=>{
         const out=document.createElement('canvas'); out.width=outW; out.height=outH;
-        const total=state.cover*state.zoom, sw=state.W/total, sh=state.H/total;
-        out.getContext('2d').drawImage(img,state.cx-sw/2,state.cy-sh/2,sw,sh,0,0,outW,outH);
+        const octx=out.getContext('2d');
+        const total=(state.cover*state.zoom)*(outW/state.W);
+        const f=frame(total,outW,outH);
+        octx.fillStyle='#000'; octx.fillRect(0,0,outW,outH);
+        octx.drawImage(img,f.sx,f.sy,f.sw,f.sh,f.dx,f.dy,f.dw,f.dh);
         out.toBlob(b=>res(b),'image/jpeg',quality||0.85);
       });
     }
