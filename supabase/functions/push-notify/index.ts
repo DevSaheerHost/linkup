@@ -10,6 +10,12 @@
 // Required secrets (Project Settings > Edge Functions > Secrets, or
 // `supabase secrets set`): VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE.
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically.
+//
+// Error visibility: console.error alone only reaches Supabase's ephemeral
+// function logs (easy to miss, limited retention, nothing alerts on it).
+// logFailure() also writes a row to public.push_failures (service-role
+// only, no client RLS policies) so failures have a durable, queryable
+// record - `select * from push_failures order by created_at desc`.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3';
@@ -23,17 +29,30 @@ const VAPID_PRIVATE = Deno.env.get('VAPID_PRIVATE')!;
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
+async function logFailure(eventTable: string, eventId: string | null, userId: string | null, message: string) {
+  console.error('push-notify failure', eventTable, eventId, message);
+  try {
+    await sb.from('push_failures').insert({ event_table: eventTable, event_id: eventId, user_id: userId, message });
+  } catch (_e) {
+    // Logging itself failing must never break notification delivery, and
+    // there's nowhere further to report it - console.error above already ran.
+  }
+}
+
 async function getUser(id: string | null) {
   if (!id) return null;
-  const { data } = await sb.from('profiles').select('id,username').eq('id', id).single();
+  const { data, error } = await sb.from('profiles').select('id,username').eq('id', id).single();
+  if (error) { await logFailure('profiles', id, null, 'getUser lookup failed: ' + error.message); return null; }
   return data;
 }
 async function getGroup(id: string) {
-  const { data } = await sb.from('groups').select('id,name').eq('id', id).single();
+  const { data, error } = await sb.from('groups').select('id,name').eq('id', id).single();
+  if (error) { await logFailure('groups', id, null, 'getGroup lookup failed: ' + error.message); return null; }
   return data;
 }
 async function getGroupMemberIds(id: string): Promise<string[]> {
-  const { data } = await sb.from('group_members').select('user_id').eq('group_id', id);
+  const { data, error } = await sb.from('group_members').select('user_id').eq('group_id', id);
+  if (error) { await logFailure('group_members', id, null, 'getGroupMemberIds lookup failed: ' + error.message); return []; }
   return (data || []).map((r: { user_id: string }) => r.user_id);
 }
 
@@ -51,9 +70,10 @@ function messageFor(n: { type: string; text?: string }, actorName?: string | nul
   }
 }
 
-async function sendToUser(userId: string, payload: Record<string, unknown>) {
+async function sendToUser(userId: string, payload: Record<string, unknown>, eventTable: string, eventId: string | null) {
   const { data: subs, error } = await sb.from('push_subs').select('*').eq('user_id', userId);
-  if (error || !subs || !subs.length) return;
+  if (error) { await logFailure(eventTable, eventId, userId, 'push_subs lookup failed: ' + error.message); return; }
+  if (!subs || !subs.length) return;
   for (const row of subs) {
     try {
       await webpush.sendNotification(row.sub, JSON.stringify(payload));
@@ -62,15 +82,16 @@ async function sendToUser(userId: string, payload: Record<string, unknown>) {
       if (statusCode === 404 || statusCode === 410) {
         await sb.from('push_subs').delete().eq('id', row.id);
       } else {
-        console.error('push send error', statusCode, err);
+        await logFailure(eventTable, eventId, userId, 'webpush send failed: ' + String((err as Error)?.message || err));
       }
     }
   }
 }
 
 Deno.serve(async (req) => {
+  let payload: { type?: string; table?: string; record?: Record<string, any> } = {};
   try {
-    const payload = await req.json();
+    payload = await req.json();
     if (payload.type !== 'INSERT' || !payload.record) return new Response('ignored', { status: 200 });
     const r = payload.record;
 
@@ -81,7 +102,7 @@ Deno.serve(async (req) => {
         const msg = messageFor(r, actor?.username) as Record<string, unknown>;
         msg.url = '/';
         msg.tag = r.type + ':' + (r.post_id || r.actor_id);
-        await sendToUser(r.user_id, msg);
+        await sendToUser(r.user_id, msg, 'notifications', r.id);
         break;
       }
       case 'messages': {
@@ -102,13 +123,13 @@ Deno.serve(async (req) => {
             title: g?.name || 'Group', body: fromName + ': ' + body, type: 'message', url: '/', tag: 'grp:' + r.group_id,
             senderName: fromName, text: body, reply: { groupId: r.group_id, conversation: r.group_id }
           };
-          for (const uid of members) if (uid !== r.sender_id) await sendToUser(uid, msg);
+          for (const uid of members) if (uid !== r.sender_id) await sendToUser(uid, msg, 'messages', r.id);
         } else if (r.receiver_id && r.receiver_id !== r.sender_id) {
           const msg = {
             title: fromName, body, type: 'message', url: '/', tag: 'msg:' + r.conversation,
             senderName: fromName, text: body, reply: { receiverId: r.sender_id, conversation: r.conversation }
           };
-          await sendToUser(r.receiver_id, msg);
+          await sendToUser(r.receiver_id, msg, 'messages', r.id);
         }
         break;
       }
@@ -120,7 +141,7 @@ Deno.serve(async (req) => {
           body: r.kind === 'video' ? 'Incoming video call' : 'Incoming voice call',
           type: 'call', kind: r.kind, callId: r.id, url: '/#call=' + r.id, tag: 'call:' + r.id
         };
-        await sendToUser(r.callee_id, msg);
+        await sendToUser(r.callee_id, msg, 'calls', r.id);
         break;
       }
       case 'groupcalls': {
@@ -132,13 +153,13 @@ Deno.serve(async (req) => {
           body: r.kind === 'video' ? 'Incoming group video call' : 'Incoming group voice call',
           type: 'call', kind: r.kind, url: '/#gcall=' + r.group_id, tag: 'gcall:' + r.group_id
         };
-        for (const uid of members) if (uid !== r.starter_id) await sendToUser(uid, msg);
+        for (const uid of members) if (uid !== r.starter_id) await sendToUser(uid, msg, 'groupcalls', r.id);
         break;
       }
     }
     return new Response('ok', { status: 200 });
   } catch (e) {
-    console.error('push-notify error', e);
+    await logFailure(payload.table || 'unknown', payload.record?.id ?? null, null, 'unhandled error: ' + String((e as Error)?.message || e));
     return new Response('error', { status: 500 });
   }
 });
