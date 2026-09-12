@@ -256,7 +256,7 @@ function enterApp(){
   applyStaticIcons();
   $('navAv').outerHTML=avatarHtml(me(),26,'nav-av').replace('class="av','id="navAv" class="av');
   if(!subbed){subscribeRealtime();subscribeCalls();subscribeGroupSig();subscribeGroupCalls();subscribePollVotes();subbed=true;}
-  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends();
+  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends(); loadFollowing(); touchOpenStreak();
   show('Feed');
   rearm();
   handleDeepLinkHash();
@@ -351,6 +351,7 @@ function show(s){
   if(s==='Chats')loadChats();
   if(s==='Profile')loadProfile(me().id);
   if(s==='Search'){$('searchInput').focus();runSearch($('searchInput').value.trim());}
+  if(s==='Create')renderAudHint();
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>show(b.dataset.s));
 $('refreshBtn').onclick=()=>show(currentScreen);
@@ -361,6 +362,63 @@ const saveState={};   // postId -> saveId|null
 const viewedPosts=new Set();   // session de-dupe for view registration
 let blockedIds=new Set();      // ids I have blocked
 let blockMap={};               // blockedId -> block record id (for unblock)
+let followingIds=new Set();    // ids I follow - drives the "liked by people you follow" line
+let socialProof={};            // postId -> usernames of followers-of-mine who liked it
+async function loadFollowing(){
+  try{
+    const {data,error}=await sb.from('follows').select('following_id').eq('follower_id',me().id);
+    if(error) throw error;
+    followingIds=new Set((data||[]).map(f=>f.following_id));
+  }catch(e){ followingIds=new Set(); }
+}
+/* Social proof: "Liked by someone you actually follow" is a far stronger
+   signal than a raw like count, and it's all already in follows+likes -
+   one batched profile lookup per page for the names. */
+async function loadSocialProof(posts,likes){
+  (posts||[]).forEach(p=>{delete socialProof[p.id];});
+  if(!followingIds.size)return;
+  const byPost={}, need=new Set();
+  (posts||[]).forEach(p=>{
+    const ids=(likes||[]).filter(l=>l.post_id===p.id&&l.user_id!==me().id&&followingIds.has(l.user_id)).map(l=>l.user_id);
+    if(ids.length){ byPost[p.id]=ids; ids.forEach(i=>need.add(i)); }
+  });
+  if(!need.size)return;
+  try{
+    const {data}=await sb.from('profiles').select('id,username').in('id',[...need]);
+    const names={}; (data||[]).forEach(u=>names[u.id]=u.username);
+    Object.keys(byPost).forEach(pid=>{ const l=byPost[pid].map(i=>names[i]).filter(Boolean); if(l.length)socialProof[pid]=l; });
+  }catch(e){}
+}
+/* "You might have missed": posts you scrolled past without engaging, from
+   people you actually follow or interact with. Rendered as its own strip
+   at the top of For You rather than mixed into the ranking, so the
+   seen-post suppression in get_feed_for_you stays exactly as it is. */
+async function renderMissedStrip(){
+  const host=$('missedStrip'); if(!host)return;
+  host.innerHTML='';
+  if(feedMode!=='all')return;
+  try{
+    const {data,error}=await sb.rpc('get_missed_posts',{page_size:3});
+    if(error) throw error;
+    const rows=data||[]; if(!rows.length)return;
+    const authorIds=[...new Set(rows.map(p=>p.author_id))];
+    const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url,is_verified').in('id',authorIds);
+    const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
+    const cards=rows.map(p=>{
+      const a=aMap[p.author_id]||{username:'user'};
+      const thumb=p.thumb_url||p.image_url||(p.photos&&p.photos[0])||'';
+      const art=thumb?`<img loading="lazy" src="${thumb}">`:`<span class="mcfallback">${icon(p.video_url?'reels':'image',22)}</span>`;
+      return `<div class="mcard" onclick="openPostView('${p.id}')">${art}<div class="mcname">${esc(a.username)}${vbadge(a)}</div></div>`;
+    }).join('');
+    host.innerHTML=`<div class="misshead">You might have missed</div><div class="missrow">${cards}</div>`;
+  }catch(e){}
+}
+function socialProofHtml(pid){
+  const n=socialProof[pid]; if(!n||!n.length)return '';
+  const first=`<b>${esc(n[0])}</b>`;
+  if(n.length===1)return `<div class="sproof">Liked by ${first}</div>`;
+  return `<div class="sproof">Liked by ${first} and ${n.length-1} other${n.length-1===1?'':'s'} you follow</div>`;
+}
 function skBlock(w,h,r,extra){let s='width:'+w+';border-radius:'+(r==null?'8px':r);if(h)s+=';height:'+h;if(extra)s+=';'+extra;return '<div class="sk" style="'+s+'"></div>';}
 function skPost(){return `<div class="post"><div class="phead">${skBlock('34px','34px','50%')}<div style="margin-left:10px">${skBlock('120px','12px')}</div></div>${skBlock('100%','','0','aspect-ratio:1/1')}<div class="pacts">${skBlock('26px','26px','50%')}${skBlock('26px','26px','50%')}${skBlock('26px','26px','50%')}</div><div class="pmeta">${skBlock('100px','12px','6px','margin-bottom:8px')}${skBlock('85%','10px','5px','margin-bottom:6px')}${skBlock('55%','10px','5px')}</div></div>`;}
 function skFeed(n){return Array.from({length:n||3},skPost).join('');}
@@ -372,8 +430,8 @@ function skReel(){return `<div class="reel">${skBlock('100%','100%','0')}</div>`
 function skStories(n){return Array.from({length:n||5},()=>`<div class="scell">${skBlock('58px','58px','50%')}${skBlock('44px','10px','5px','margin-top:6px')}</div>`).join('');}
 async function loadFeed(){
   const box=$('sFeed');
-  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="feedPosts"></div>`;
-  renderFeedTabs(); loadStories(); loadFeedPosts(true);
+  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="missedStrip"></div><div id="feedPosts"></div>`;
+  renderFeedTabs(); loadStories(); renderMissedStrip(); loadFeedPosts(true);
 }
 let feedPage=1, feedLoading=false, feedDone=false, feedFollowIds=null, feedToken=0, feedMoreObs=null;
 let feedCursor=null; // {score,created_at,id} keyset cursor for the "For You" ranked feed
@@ -437,7 +495,9 @@ async function loadFeedPosts(reset){
       await loadPollVotes(posts);
       if(myTok!==feedToken){feedLoading=false;return;}
       const cByPost={}; comments.forEach(c=>{(cByPost[c.post_id]=cByPost[c.post_id]||[]).push(c);});
-      posts.forEach(p=>{const pl=likes.filter(l=>l.post_id===p.id);likeState[p.id]={count:pl.length,myLikeId:(pl.find(l=>l.user_id===me().id)||{}).id||null}; saveState[p.id]=(saves.find(s=>s.post_id===p.id)||{}).id||null;});
+      posts.forEach(p=>{setLikeState(p.id,likes.filter(l=>l.post_id===p.id)); saveState[p.id]=(saves.find(s=>s.post_id===p.id)||{}).id||null;});
+      await loadSocialProof(posts,likes);
+      if(myTok!==feedToken){feedLoading=false;return;}
       box.insertAdjacentHTML('beforeend',posts.map(p=>renderPost(p,cByPost[p.id]||[])).join(''));
       setupFeedAutoplay();
       setupViewObs();
@@ -460,7 +520,7 @@ function armFeedPrefetch(){
   feedMoreObs.observe(target);
 }
 function renderFeedTabs(){const t=$('ftabs');if(!t)return;t.innerHTML=`<button class="${feedMode==='all'?'on':''}" onclick="setFeedMode('all')">For You</button><button class="${feedMode==='following'?'on':''}" onclick="setFeedMode('following')">Following</button>`;}
-function setFeedMode(m){feedMode=m;renderFeedTabs();loadFeedPosts(true);}
+function setFeedMode(m){feedMode=m;renderFeedTabs();renderMissedStrip();loadFeedPosts(true);}
 $('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ onFeedScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
 function applyVideoCrop(video,crop){
   if(!crop)return;
@@ -514,20 +574,86 @@ function renderPost(p,cmts,full){
       <div style="margin-left:auto;color:var(--mut);font-size:12px">${timeAgo(p.created_at)}</div>
       ${a.id===me().id?`<button class="pmore" onclick="openPostMenu('${p.id}')">${icon('more',20)}</button>`:`<button class="pmore" onclick="openOtherPostMenu('${p.id}','${a.id}','${esc(a.username)}')">${icon('more',20)}</button>`}</div>
     ${p.poll?pollBlock(p):postMedia(p)}
-    <div class="pacts"><span class="like ${liked?'liked':''}" onclick="toggleLike('${p.id}')">${icon('heart',26,{fill:liked?'currentColor':'none'})}</span><span onclick="$('ci_${p.id}').focus()">${icon('comment',26)}</span><span onclick="openShare('${p.id}')">${icon('send',26)}</span><span class="bm ${saved?'saved':''}" id="bm_${p.id}" onclick="toggleSave('${p.id}')">${icon('bookmark',26,{fill:saved?'currentColor':'none'})}</span></div>
-    <div class="pmeta"><div class="likes" id="lc_${p.id}">${st.count} like${st.count===1?'':'s'}</div>${cap}${tagsHtml(p.tags)}<div class="vcount" data-pid="${p.id}"></div></div>
+    <div class="pacts"><span class="like ${liked?'liked':''}" onclick="toggleLike('${p.id}')">${likeBtnHtml(p.id)}</span><span onclick="$('ci_${p.id}').focus()">${icon('comment',26)}</span><span onclick="openShare('${p.id}')">${icon('send',26)}</span><span class="bm ${saved?'saved':''}" id="bm_${p.id}" onclick="toggleSave('${p.id}')">${icon('bookmark',26,{fill:saved?'currentColor':'none'})}</span></div>
+    <div class="pmeta"><div class="rchips prchips" id="rx_${p.id}">${postReactChips(p.id)}</div><div class="likes" id="lc_${p.id}">${st.count} like${st.count===1?'':'s'}</div>${socialProofHtml(p.id)}${cap}${tagsHtml(p.tags)}<div class="vcount" data-pid="${p.id}"></div></div>
     <div class="cmts" id="cl_${p.id}">${more}${shown}</div>
     <div class="cadd"><input id="ci_${p.id}" placeholder="Add a comment…"><button onclick="addComment('${p.id}')">Post</button></div>
   </div>`;
 }
+/* One place that turns raw `likes` rows into the shape the UI reads, so
+   the feed, reels and post-view load paths can't drift apart. A row with
+   no reaction is a plain heart ('love'), which is what every like was
+   before reactions existed. */
+function setLikeState(pid,rows){
+  rows=rows||[];
+  const mine=rows.find(l=>l.user_id===me().id);
+  const counts={};
+  rows.forEach(l=>{const k=l.reaction||'love';counts[k]=(counts[k]||0)+1;});
+  likeState[pid]={count:rows.length,myLikeId:mine?mine.id:null,myReaction:mine?(mine.reaction||'love'):null,counts};
+  return likeState[pid];
+}
+function bumpReact(pid,key,delta){
+  if(!key)return;
+  const st=likeState[pid]; if(!st)return;
+  st.counts=st.counts||{};
+  st.counts[key]=Math.max(0,(st.counts[key]||0)+delta);
+  if(!st.counts[key])delete st.counts[key];
+}
+function likeBtnHtml(pid){
+  const st=likeState[pid]||{};
+  if(st.myLikeId&&st.myReaction&&st.myReaction!=='love')return reactIcon(st.myReaction,26);
+  return icon('heart',26,{fill:st.myLikeId?'currentColor':'none'});
+}
+function postReactChips(pid){
+  const st=likeState[pid]||{}; const counts=st.counts||{};
+  const keys=REACT_ORDER.filter(k=>counts[k]);
+  if(!keys.length)return '';
+  return keys.map(k=>`<span class="rchip ${st.myReaction===k?'mine':''}" onclick="reactPost('${pid}','${k}')">${reactIcon(k,14)}${counts[k]>1?`<i>${counts[k]}</i>`:''}</span>`).join('');
+}
 async function toggleLike(pid){
+  if(likeLPFired){likeLPFired=false;return;}   // the long-press already opened the picker
   const st=likeState[pid]; if(!st)return;
   try{
-    if(st.myLikeId){const id=st.myLikeId;st.myLikeId=null;st.count--;updLike(pid,false);await sb.from('likes').delete().eq('id',id);}
-    else{st.myLikeId='tmp';st.count++;updLike(pid,true);const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
+    if(st.myLikeId){const id=st.myLikeId;bumpReact(pid,st.myReaction,-1);st.myLikeId=null;st.myReaction=null;st.count--;updLike(pid);if(id!=='tmp')await sb.from('likes').delete().eq('id',id);}
+    else{st.myLikeId='tmp';st.myReaction='love';st.count++;bumpReact(pid,'love',1);updLike(pid);const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:'love'}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
   }catch(e){toast('Like failed');loadFeed();}
 }
-function updLike(pid,liked){const el=document.querySelector('#post_'+pid+' .like');if(el){el.innerHTML=icon('heart',26,{fill:liked?'currentColor':'none'});el.classList.toggle('liked',liked);}const lc=$('lc_'+pid);const st=likeState[pid];if(lc)lc.textContent=st.count+' like'+(st.count===1?'':'s');}
+/* Long-press the like button to pick one of the six reactions DMs already
+   use. Replacing an existing reaction is an UPDATE, not delete+insert, so
+   the row keeps its id and created_at (the ranking functions read
+   likes.created_at for recency-weighted affinity). */
+async function reactPost(pid,key){
+  const st=likeState[pid]||setLikeState(pid,[]);
+  const prev={count:st.count,myLikeId:st.myLikeId,myReaction:st.myReaction,counts:{...(st.counts||{})}};
+  try{
+    if(st.myReaction===key){           // tapping your current reaction clears it
+      const id=st.myLikeId;
+      bumpReact(pid,key,-1); st.myLikeId=null; st.myReaction=null; st.count--;
+      updLike(pid);
+      if(id&&id!=='tmp')await sb.from('likes').delete().eq('id',id);
+      return;
+    }
+    if(st.myLikeId){
+      const id=st.myLikeId;
+      bumpReact(pid,st.myReaction,-1); bumpReact(pid,key,1); st.myReaction=key;
+      updLike(pid);
+      if(id!=='tmp')await sb.from('likes').update({reaction:key}).eq('id',id);
+    }else{
+      st.myLikeId='tmp'; st.myReaction=key; st.count++; bumpReact(pid,key,1);
+      updLike(pid);
+      const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:key}).select().single();
+      st.myLikeId=r.id;
+      notify('like',postAuthor[pid],{post_id:pid});
+    }
+  }catch(e){ likeState[pid]=prev; updLike(pid); toast('Reaction failed: '+sbErr(e)); }
+}
+function updLike(pid){
+  const st=likeState[pid]||{count:0,myLikeId:null};
+  const el=document.querySelector('#post_'+pid+' .like');
+  if(el){el.innerHTML=likeBtnHtml(pid);el.classList.toggle('liked',!!st.myLikeId);}
+  const lc=$('lc_'+pid); if(lc)lc.textContent=st.count+' like'+(st.count===1?'':'s');
+  const ch=$('rx_'+pid); if(ch)ch.innerHTML=postReactChips(pid);
+}
 let _tap={id:null,t:0,timer:null};
 function mediaTap(e,pid,kind){
   const tgt=e.currentTarget, now=Date.now();
@@ -543,13 +669,13 @@ function mediaTap(e,pid,kind){
   }
 }
 async function likeOn(pid){
-  const st=likeState[pid]||{count:0,myLikeId:null}; likeState[pid]=st;
+  const st=likeState[pid]||setLikeState(pid,[]); likeState[pid]=st;
   if(st.myLikeId)return;               // already liked: keep it, just show the heart
-  st.myLikeId='tmp'; st.count++;
-  if(document.querySelector('#post_'+pid+' .like'))updLike(pid,true);
+  st.myLikeId='tmp'; st.myReaction='love'; st.count++; bumpReact(pid,'love',1);
+  if(document.querySelector('#post_'+pid+' .like'))updLike(pid);
   const rc=$('rlc_'+pid); if(rc){rc.textContent=st.count;const rb=rc.closest('.ract');if(rb){rb.classList.add('liked');const svg=rb.querySelector('svg');if(svg)svg.setAttribute('fill','currentColor');}}
-  try{ const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id}).select().single(); st.myLikeId=r.id; notify('like',postAuthor[pid],{post_id:pid}); }
-  catch(e){ st.myLikeId=null; st.count=Math.max(0,st.count-1); if(document.querySelector('#post_'+pid+' .like'))updLike(pid,false); if(rc)rc.textContent=st.count; }
+  try{ const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:'love'}).select().single(); st.myLikeId=r.id; notify('like',postAuthor[pid],{post_id:pid}); }
+  catch(e){ st.myLikeId=null; st.myReaction=null; st.count=Math.max(0,st.count-1); bumpReact(pid,'love',-1); if(document.querySelector('#post_'+pid+' .like'))updLike(pid); if(rc)rc.textContent=st.count; }
 }
 function heartBurst(tgt){
   if(!tgt)return; const r=tgt.getBoundingClientRect();
@@ -578,6 +704,9 @@ async function addComment(pid){
       if(parentAuthor&&parentAuthor!==postAuthor[pid]) notify('reply',parentAuthor,{post_id:pid,comment_id:parent,text:text.slice(0,80)});
     }
     notify('comment',postAuthor[pid],{post_id:pid,text:text.slice(0,80)});
+    /* Everyone else already in this thread - the post author and the
+       parent author are handled above and excluded server-side. */
+    sb.rpc('notify_thread_participants',{p_comment_id:r.id}).then(()=>{}).catch(()=>{});
   }
   catch(e){toast('Comment failed');}
 }
@@ -664,6 +793,7 @@ async function loadCloseFriends(){
     if(error) throw error;
     closeFriendIds=new Set(); cfMap={};
     (rows||[]).forEach(r=>{ closeFriendIds.add(r.friend_id); cfMap[r.friend_id]=r.id; });
+    renderAudHint();   // the hint depends on having a close-friends list
   }catch(e){ console.warn('closefriends read failed:',sbErr(e)); }
 }
 async function toggleCloseFriend(uid){
@@ -673,7 +803,16 @@ async function toggleCloseFriend(uid){
     else { const id=cfMap[uid]; if(id)await sb.from('closefriends').delete().eq('id',id); closeFriendIds.delete(uid); delete cfMap[uid]; toast('Removed from Close Friends'); }
   }catch(e){ toast('Failed: '+sbErr(e)); }
 }
-function setAudience(a){ postAudience=a; $('audAll').classList.toggle('on',a==='public'); $('audClose').classList.toggle('on',a==='close'); }
+function setAudience(a){ postAudience=a; $('audAll').classList.toggle('on',a==='public'); $('audClose').classList.toggle('on',a==='close'); renderAudHint(); }
+/* Posting to everyone is the highest-stakes option, and that hesitation is
+   what stops people posting at all. Offer the smaller audience right at the
+   moment of doubt - but only to people who actually have a close-friends
+   list, otherwise it's a dead end that just adds noise. */
+function renderAudHint(){
+  const el=$('audHint'); if(!el)return;
+  if(postAudience!=='public'||!closeFriendIds.size){ el.innerHTML=''; return; }
+  el.innerHTML=`Not sure about posting to everyone? <b onclick="setAudience('close')">Share with Close Friends instead</b>`;
+}
 
 /* ============ POLLS ============ */
 function seedPoll(p){ if(pollState[p.id])return; const d=p.poll; if(!d)return; pollState[p.id]={q:d.q||'',opts:d.opts||[],counts:(d.opts||[]).map(()=>0),total:0,my:null,voteId:null}; }
@@ -800,7 +939,7 @@ function reelHTML(p){
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
   let likes=[]; try{const {data}=await sb.from('likes').select('*').in('post_id',pids);likes=data||[];}catch(e){}
-  posts.forEach(p=>{const pl=likes.filter(l=>l.post_id===p.id);likeState[p.id]={count:pl.length,myLikeId:(pl.find(l=>l.user_id===me().id)||{}).id||null};postAuthor[p.id]=(p.author?p.author.id:p.author_id);postVideo[p.id]=true;});
+  posts.forEach(p=>{setLikeState(p.id,likes.filter(l=>l.post_id===p.id));postAuthor[p.id]=(p.author?p.author.id:p.author_id);postVideo[p.id]=true;});
 }
 function openReelAt(pid,t){ reelStartId=pid; reelSeek=t||0; show('Reels'); }
 async function loadReels(reset){
@@ -1228,7 +1367,7 @@ async function loadProfile(uid){
         :`<button id="followBtn" class="${followId?'':'grad'}" ${followId?'':'style="color:#fff"'} onclick="toggleFollow('${uid}','${followId||''}')">${followId?'Following':'Follow'}</button><button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
     box.innerHTML=`<div class="prof">
       <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div onclick="openFollowList('${uid}','followers')" style="cursor:pointer"><b>${followersN}</b><span>followers</span></div><div onclick="openFollowList('${uid}','following')" style="cursor:pointer"><b>${followingN}</b><span>following</span></div></div></div>
-      <div class="pname">${esc(u.name||u.username)}${vbadge(u)}</div>
+      <div class="pname">${esc(u.name||u.username)}${vbadge(u)}${isMe?openStreakHtml(u):''}</div>
       <div class="mut" style="color:var(--mut);font-size:13px;margin-bottom:6px">@${esc(u.username)}</div>
       ${(!isMe&&!blocked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
       <div class="pbio">${esc(u.bio||'')}</div>
@@ -1322,6 +1461,7 @@ async function loadChats(){
   const box=$('sChats');box.innerHTML=skRows(7);
   try{
     await loadMyGroups();
+    await loadDmStreaks();
     const {data:msgRows,error}=await sb.from('messages').select('*').or('sender_id.eq.'+me().id+',receiver_id.eq.'+me().id).is('group_id',null).order('created_at',{ascending:false}).limit(150);
     if(error) throw error;
     const msgs=msgRows||[];
@@ -1365,7 +1505,45 @@ function filterChats(q){
   else if(none){ none.style.display='none'; }
 }
 function callSnip(m){const p=(m.call||'').split(':'),k=p[0]||'audio',st=p[1]||'ended';if(st==='missed')return 'Missed '+(k==='video'?'video ':'')+'call';if(st==='declined')return 'Call declined';return (k==='video'?'Video':'Voice')+' call';}
-function dmRow(id,u,m,uc){const snip=m.call?callSnip(m):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'');const mine=(m.sender_id===me().id&&!m.call)?'You: ':'';const pin=getPinned().has(id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:`<div class="mut">${timeAgo(m.created_at)}</div>`;return `<div class="row" data-id="${id}" data-name="${esc(((u.username||'')+' '+(u.name||'')).toLowerCase())}" onclick="openChat('${id}')"><div class="cav">${avatarHtml(u,48)}${isOnline(u)?'<span class="cdot"></span>':''}</div><div class="last"><div class="nm">${esc(u.username)}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${mine}${snip}</div></div>${right}</div>`;}
+function dmRow(id,u,m,uc){const snip=m.call?callSnip(m):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'');const mine=(m.sender_id===me().id&&!m.call)?'You: ':'';const pin=getPinned().has(id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const stk=streakHtml(id);const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:`<div class="mut">${timeAgo(m.created_at)}</div>`;return `<div class="row" data-id="${id}" data-name="${esc(((u.username||'')+' '+(u.name||'')).toLowerCase())}" onclick="openChat('${id}')"><div class="cav">${avatarHtml(u,48)}${isOnline(u)?'<span class="cdot"></span>':''}</div><div class="last"><div class="nm">${esc(u.username)}${stk}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${mine}${snip}</div></div>${right}</div>`;}
+/* Daily open streak. Intentionally low-key: milestones get a toast on the
+   day they're hit and the count shows on your own profile, but breaking a
+   streak says nothing at all - it just starts again at 1. */
+const OPEN_MILESTONES=[7,30,100,365];
+async function touchOpenStreak(){
+  try{
+    const {data,error}=await sb.rpc('touch_open_streak');
+    if(error) throw error;
+    const row=Array.isArray(data)?data[0]:data; if(!row)return;
+    if(myProfile){ myProfile.streak_days=row.streak; }
+    if(row.bumped&&OPEN_MILESTONES.includes(row.streak)){
+      setTimeout(()=>toast(row.streak+' days in a row 🔥'),1200);
+    }
+  }catch(e){}
+}
+function openStreakHtml(u){
+  const n=(u&&u.streak_days)||0;
+  if(n<2)return '';
+  return `<span class="streak" title="${n}-day streak">${icon('rfire',13,{fill:'currentColor'})}<i>${n}</i></span>`;
+}
+
+/* DM streaks: consecutive days you and one other person BOTH messaged.
+   Shown from 2 days - a single day isn't a streak, and showing "1" on
+   every new conversation would make the flame meaningless. */
+let dmStreaks={};
+const STREAK_MIN=2;
+async function loadDmStreaks(){
+  try{
+    const {data,error}=await sb.rpc('my_dm_streaks');
+    if(error) throw error;
+    dmStreaks={}; (data||[]).forEach(r=>{dmStreaks[r.other_id]=r.streak;});
+  }catch(e){ dmStreaks={}; }
+}
+function streakHtml(uid){
+  const n=dmStreaks[uid]||0;
+  if(n<STREAK_MIN)return '';
+  return `<span class="streak" title="${n}-day streak">${icon('rfire',13,{fill:'currentColor'})}<i>${n}</i></span>`;
+}
 function groupRow(g,m,uc){const snip=m?(m.sys?esc(m.sys):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'')):'No messages yet';const pre=(m&&m.sender_id===me().id&&!m.sys)?'You: ':'';const pin=getPinned().has(g.id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(g.id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:(m?`<div class="mut">${timeAgo(m.created_at)}</div>`:'');return `<div class="row" data-id="${g.id}" data-name="${esc((g.name||'group').toLowerCase())}" onclick="openGroup('${g.id}')"><div class="cav">${groupAvatar(g,48)}</div><div class="last"><div class="nm">${esc(g.name||'Group')}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${pre}${snip}</div></div>${right}</div>`;}
 
 /* ================= CHAT THREAD ================= */
@@ -1938,7 +2116,7 @@ function buildStoryView(){
   const bars=svList.map((_,i)=>`<div class="sbar"><i id="sbar_${i}"></i></div>`).join('');
   const x='<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   $('storyView').innerHTML=`<div class="sbars">${bars}</div>
-    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}</div><button class="sclose" onclick="closeStory()">${x}</button></div>
+    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}</div><span class="sleft" id="svLeft"></span><button class="sclose" onclick="closeStory()">${x}</button></div>
     <div class="simg" id="svImg"></div>
     <div class="szones"><div onclick="prevStory()"></div><div onclick="nextStory()"></div></div>
     <div id="svTags" style="position:absolute;bottom:${svUser.id===me().id?'84px':'134px'};left:16px;right:80px;color:#fff;font-size:13px;z-index:3;text-shadow:0 1px 4px #000"></div>
@@ -1950,6 +2128,8 @@ function showStoryFrame(){
   $('svImg').innerHTML=`<img class="blur-load" src="${s.image_url}" onload="this.classList.add('loaded')">`;
   svList.forEach((_,i)=>{const b=$('sbar_'+i);if(b){b.style.transition='none';b.style.width=i<svIdx?'100%':'0';}});
   const tg=$('svTags'); if(tg)tg.innerHTML=storyTagsLine(s.tags);
+  const lf=$('svLeft');
+  if(lf){ const t=storyTimeLeft(s.created_at); lf.textContent=t?t.label:''; lf.classList.toggle('urgent',!!(t&&t.urgent)); }
   if(svUser.id!==me().id){
     refreshStoryLike();
     if(!storyViewed.has(s.id)){ storyViewed.add(s.id); sb.from('story_views').upsert({story_id:s.id,viewer_id:me().id},{onConflict:'story_id,viewer_id',ignoreDuplicates:true}).then(()=>{}).catch(()=>{}); }
@@ -1972,20 +2152,61 @@ async function sLike(){
   const s=svList[svIdx],b=$('sLikeBtn'); if(!s||!b)return; const lid=b.dataset.lid;
   try{
     if(lid){ await sb.from('story_likes').delete().eq('id',lid); b.dataset.lid=''; b.classList.remove('liked'); const g=b.querySelector('svg'); if(g)g.setAttribute('fill','none'); }
-    else{ const {data:r}=await sb.from('story_likes').insert({story_id:s.id,user_id:me().id}).select().single(); b.dataset.lid=r.id; b.classList.add('liked'); const g=b.querySelector('svg'); if(g)g.setAttribute('fill','currentColor'); if(svUser&&svUser.id!==me().id)notify('storylike',svUser.id,{}); }
+    else{ const {data:r}=await sb.from('story_likes').insert({story_id:s.id,user_id:me().id,reaction:'love'}).select().single(); b.dataset.lid=r.id; b.classList.add('liked'); const g=b.querySelector('svg'); if(g)g.setAttribute('fill','currentColor'); if(svUser&&svUser.id!==me().id)notify('storylike',svUser.id,{}); }
   }catch(e){toast('Like failed: '+sbErr(e));}
 }
 async function sReply(){ const inp=$('sReplyInput'); if(!inp)return; const t=inp.value.trim(); if(!t||!svUser)return; inp.value=''; try{ const key=convKey(me().id,svUser.id); await sb.from('messages').insert({sender_id:me().id,receiver_id:svUser.id,conversation:key,text:t}); toast('Reply sent'); }catch(e){toast('Reply failed: '+sbErr(e));} clearTimeout(svTimer); svTimer=setTimeout(nextStory,3000); }
 const STORY_EMOJI={like:0x1F44D,love:0x2764,haha:0x1F602,wow:0x1F62E,sad:0x1F622,fire:0x1F525};
 async function sReact(key){
-  if(!svUser)return; clearTimeout(svTimer);
+  const s=svList[svIdx];
+  if(!svUser||!s)return; clearTimeout(svTimer);
   const emoji=String.fromCodePoint(STORY_EMOJI[key]||0x2764);
-  try{ const k=convKey(me().id,svUser.id); await sb.from('messages').insert({sender_id:me().id,receiver_id:svUser.id,conversation:k,text:emoji}); toast('Reaction sent'); if(svUser.id!==me().id)notify('storylike',svUser.id,{}); }
+  try{
+    /* Record it as a real reaction as well as DM-ing the emoji. The DM is
+       what the viewer expects (that's how story reactions read), but on
+       its own it left the author no way to see reactions in aggregate -
+       the story just showed a view count. */
+    await sb.from('story_likes').upsert({story_id:s.id,user_id:me().id,reaction:key},{onConflict:'story_id,user_id'});
+    const k=convKey(me().id,svUser.id);
+    await sb.from('messages').insert({sender_id:me().id,receiver_id:svUser.id,conversation:k,text:emoji});
+    toast('Reaction sent');
+    if(svUser.id!==me().id)notify('storylike',svUser.id,{});
+    refreshStoryLike();
+  }
   catch(e){ toast('Reaction failed: '+sbErr(e)); }
   svTimer=setTimeout(nextStory,2500);
 }
 async function delStory(){ const s=svList[svIdx]; if(!s)return; try{ await sb.from('stories').delete().eq('id',s.id); svList.splice(svIdx,1); toast('Story deleted'); loadStories(); if(!svList.length){closeStory();return;} if(svIdx>=svList.length)svIdx=svList.length-1; buildStoryView(); playStory(); }catch(e){toast('Delete failed');} }
-async function updateSeen(storyId){ const el=$('svSeen'); if(!el)return; el.dataset.story=storyId; el.textContent='Seen by …'; try{ const {count}=await sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId); el.textContent='Seen by '+(count||0); }catch(e){ el.textContent=''; } }
+/* Author-side feedback loop: raw view count, how many of those landed in
+   the last hour (the "it's happening right now" pull), and how many people
+   reacted - reactions were previously invisible to the author entirely. */
+async function updateSeen(storyId){
+  const el=$('svSeen'); if(!el)return;
+  el.dataset.story=storyId; el.textContent='Seen by …';
+  try{
+    const hourAgo=new Date(Date.now()-3600000).toISOString();
+    const [{count:views},{count:recent},{count:reacts}]=await Promise.all([
+      sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId),
+      sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId).gte('created_at',hourAgo),
+      sb.from('story_likes').select('id',{count:'exact',head:true}).eq('story_id',storyId)
+    ]);
+    let txt='Seen by '+(views||0);
+    if(recent)txt+=' · '+recent+' in the last hour';
+    if(reacts)txt+=' · '+reacts+' reaction'+(reacts===1?'':'s');
+    el.textContent=txt;
+  }catch(e){ el.textContent=''; }
+}
+/* Stories are gone 24h after they're posted (loadStories only fetches that
+   window). Showing the time left is the whole point of an ephemeral post -
+   it's what turns "I'll look later" into "I'll look now". */
+function storyTimeLeft(createdAt){
+  const msLeft=86400000-(Date.now()-new Date(createdAt).getTime());
+  if(msLeft<=0)return null;
+  const mins=Math.floor(msLeft/60000);
+  if(mins<60)return {label:mins+'m left',urgent:true};
+  const hrs=Math.floor(mins/60);
+  return {label:hrs+'h left',urgent:hrs<3};
+}
 async function openSeenList(){
   const el=$('svSeen'); const sid=el&&el.dataset.story; if(!sid)return; clearTimeout(svTimer);
   $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Viewers'; const body=$('listBody'); body.innerHTML=skRows(8);
@@ -2055,10 +2276,10 @@ async function regenThumb(pid){
   }catch(e){toast('Failed: '+sbErr(e));}
 }
 async function reelLike(pid,btn){
-  const st=likeState[pid]||{count:0,myLikeId:null};
+  const st=likeState[pid]||setLikeState(pid,[]);
   try{
-    if(st.myLikeId){const id=st.myLikeId;st.myLikeId=null;st.count=Math.max(0,st.count-1);if(id!=='tmp')await sb.from('likes').delete().eq('id',id);}
-    else{st.myLikeId='tmp';st.count++;const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
+    if(st.myLikeId){const id=st.myLikeId;bumpReact(pid,st.myReaction,-1);st.myLikeId=null;st.myReaction=null;st.count=Math.max(0,st.count-1);if(id!=='tmp')await sb.from('likes').delete().eq('id',id);}
+    else{st.myLikeId='tmp';st.myReaction='love';st.count++;bumpReact(pid,'love',1);const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:'love'}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
     likeState[pid]=st;
     btn.classList.toggle('liked',!!st.myLikeId);
     const svg=btn.querySelector('svg'); if(svg)svg.setAttribute('fill',st.myLikeId?'currentColor':'none');
@@ -2216,8 +2437,14 @@ async function openNotif(){
       const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you'};
       body.innerHTML=items.map(n=>{
         const u=users[n.actor_id]||{username:'someone'};
-        const v=NOTIF_VERB[n.type]; const verb=typeof v==='function'?v(n):(v||'started following you');
         const openAction=n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
+        /* Digests and recaps come from the official account and read as a
+           whole sentence already - prefixing them with "linkup" would be
+           wrong, so they render as plain text. */
+        if(n.type==='digest'||n.type==='recap'){
+          return `<div class="row ${n.read?'':'nrow'}" onclick="${openAction};closeNotif();"><div class="cav">${avatarHtml(u,44)}</div><div class="last"><div class="snip">${esc(n.text||'')}</div></div><div class="mut">${timeAgo(n.created_at)}</div></div>`;
+        }
+        const v=NOTIF_VERB[n.type]; const verb=typeof v==='function'?v(n):(v||'started following you');
         return `<div class="row ${n.read?'':'nrow'}" onclick="${openAction};closeNotif();"><div class="cav">${avatarHtml(u,44)}</div><div class="last"><div class="snip"><b>${esc(u.username)}</b> ${verb}</div></div><div class="mut">${timeAgo(n.created_at)}</div></div>`;
       }).join('');
     }
@@ -2249,7 +2476,8 @@ async function openPostView(pid){
     if(error) throw error;
     const {data:likes}=await sb.from('likes').select('*').eq('post_id',pid);
     const {data:comments}=await sb.from('comments').select('*, user:user_id(id,username,name,avatar_url)').eq('post_id',pid).order('created_at');
-    likeState[p.id]={count:(likes||[]).length,myLikeId:((likes||[]).find(l=>l.user_id===me().id)||{}).id||null};
+    setLikeState(p.id,likes||[]);
+    await loadSocialProof([p],likes||[]);
     await loadCommentLikes(comments||[]);
     await loadPollVotes([p]);
     try{ const {data:sv}=await sb.from('saves').select('id').eq('post_id',pid).eq('user_id',me().id).maybeSingle(); saveState[pid]=sv?sv.id:null; }catch(e){}
@@ -2261,6 +2489,36 @@ async function openPostView(pid){
 }
 function closePostView(){$('postView').classList.remove('on');}
 $('postViewBack').onclick=closePostView;
+
+/* Long-press the like button for the reaction picker (tap still just
+   hearts it). Delegated from the document so it works for posts rendered
+   later, and pointer events cover touch and mouse in one path. */
+let likeLPTimer=null, likeLPFired=false, likeLPFrom=null;
+document.addEventListener('pointerdown',e=>{
+  const el=e.target.closest('.pacts .like'); if(!el)return;
+  const post=el.closest('.post'); const pid=post&&post.getAttribute('data-pid'); if(!pid)return;
+  likeLPFired=false; likeLPFrom={x:e.clientX,y:e.clientY};
+  clearTimeout(likeLPTimer);
+  likeLPTimer=setTimeout(()=>{ likeLPTimer=null; likeLPFired=true; openPostReact(pid); },450);
+});
+function cancelLikeLP(){ clearTimeout(likeLPTimer); likeLPTimer=null; likeLPFrom=null; }
+['pointerup','pointercancel'].forEach(ev=>document.addEventListener(ev,cancelLikeLP));
+/* Only a real drag cancels the press - a finger never holds perfectly
+   still, and cancelling on any movement at all made the picker almost
+   impossible to open on a touchscreen. */
+document.addEventListener('pointermove',e=>{
+  if(!likeLPTimer||!likeLPFrom)return;
+  if(Math.abs(e.clientX-likeLPFrom.x)>10||Math.abs(e.clientY-likeLPFrom.y)>10)cancelLikeLP();
+});
+function openPostReact(pid){
+  reactPid=pid;
+  const mine=(likeState[pid]||{}).myReaction;
+  $('postReactRow').innerHTML=REACT_ORDER.map(k=>`<button class="rbtn ${mine===k?'on':''}" onclick="closePostReact();reactPost('${pid}','${k}')">${reactIcon(k,26)}</button>`).join('');
+  $('postReactWrap').classList.add('on'); rearm();
+}
+function closePostReact(){ $('postReactWrap').classList.remove('on'); }
+$('postReactCancel').onclick=closePostReact;
+$('postReactWrap').onclick=e=>{ if(e.target.id==='postReactWrap')closePostReact(); };
 /* ============ BACK-BUTTON ROUTER ============ */
 let rootBackT=0;
 function rearm(){ try{history.pushState({linkup:1},'');}catch(e){} }
@@ -2269,6 +2527,7 @@ function topLayerClose(){
   if($('call').classList.contains('on'))return true;
   if($('capWrap').classList.contains('on')){$('capWrap').classList.remove('on');capOnSave=null;return true;}
   if($('insightsWrap').classList.contains('on')){closeInsights();return true;}
+  if($('postReactWrap').classList.contains('on')){closePostReact();return true;}
   if($('postMenuWrap').classList.contains('on')){closePostMenu();return true;}
   if($('msgMenuWrap').classList.contains('on')){closeMsgMenu();return true;}
   if($('actMenuWrap').classList.contains('on')){closeActMenu();return true;}
@@ -2303,6 +2562,10 @@ async function openChat(uid){
   typingRecId=null; lastTypingSent=0; $('typing').style.display='none';
   $('chatAv').innerHTML=avatarHtml(chatUser,38);
   $('chatName').textContent=chatUser.name||chatUser.username;
+  /* Show the cached streak immediately, then refresh - opening the chat is
+     exactly when it may have just changed (they replied since you looked). */
+  $('chatStreak').innerHTML=streakHtml(chatUser.id);
+  loadDmStreaks().then(()=>{ if(chatUser&&$('chatStreak'))$('chatStreak').innerHTML=streakHtml(chatUser.id); });
   renderPresence();
   $('chatAv').onclick=null; $('chatName').onclick=null;
   $('callBtns').style.display='flex';
