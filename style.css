@@ -199,7 +199,10 @@
   .odot.on{display:inline-block}
   .cav{position:relative;flex:none}
   .cdot{position:absolute;right:0;bottom:0;width:13px;height:13px;border-radius:50%;background:#3ddc84;border:2px solid var(--bg);box-shadow:0 0 6px #3ddc84}
-  .menuwrap{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:70}
+  /* Must render above .overlay (85)/#storyCompose (82)/#storyView (80) too,
+     not just #chat (30) - a menu opened from a post view (or story view/
+     compose) was rendering correctly but completely hidden behind it. */
+  .menuwrap{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:91}
   .menuwrap.on{display:flex}
   .menu{width:100%;background:var(--card);border-radius:18px 18px 0 0;padding:10px;display:flex;flex-direction:column;gap:8px;animation:slideup .18s ease}
   .menu button{padding:15px;border-radius:12px;background:var(--soft);color:var(--txt);font-size:15px;font-weight:600;border:none;cursor:pointer}
