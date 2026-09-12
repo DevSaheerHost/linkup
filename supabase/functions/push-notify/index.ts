@@ -66,6 +66,10 @@ function messageFor(n: { type: string; text?: string }, actorName?: string | nul
     case 'follow': return { title: 'LinkUp', body: who + ' started following you' };
     case 'tag': return { title: 'LinkUp', body: who + ' tagged you in a post' };
     case 'storylike': return { title: 'LinkUp', body: who + ' liked your story' };
+    // Digests/recaps are attributed to the official account, so the actor's
+    // name would read as "linkup 5 new likes..." - the text stands alone.
+    case 'digest': return { title: 'LinkUp', body: n.text || 'New activity on your posts' };
+    case 'recap': return { title: 'Your week on LinkUp', body: n.text || 'See how your posts did' };
     default: return { title: 'LinkUp', body: n.text || 'New activity' };
   }
 }

@@ -2437,8 +2437,14 @@ async function openNotif(){
       const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you'};
       body.innerHTML=items.map(n=>{
         const u=users[n.actor_id]||{username:'someone'};
-        const v=NOTIF_VERB[n.type]; const verb=typeof v==='function'?v(n):(v||'started following you');
         const openAction=n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
+        /* Digests and recaps come from the official account and read as a
+           whole sentence already - prefixing them with "linkup" would be
+           wrong, so they render as plain text. */
+        if(n.type==='digest'||n.type==='recap'){
+          return `<div class="row ${n.read?'':'nrow'}" onclick="${openAction};closeNotif();"><div class="cav">${avatarHtml(u,44)}</div><div class="last"><div class="snip">${esc(n.text||'')}</div></div><div class="mut">${timeAgo(n.created_at)}</div></div>`;
+        }
+        const v=NOTIF_VERB[n.type]; const verb=typeof v==='function'?v(n):(v||'started following you');
         return `<div class="row ${n.read?'':'nrow'}" onclick="${openAction};closeNotif();"><div class="cav">${avatarHtml(u,44)}</div><div class="last"><div class="snip"><b>${esc(u.username)}</b> ${verb}</div></div><div class="mut">${timeAgo(n.created_at)}</div></div>`;
       }).join('');
     }
