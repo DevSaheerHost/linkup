@@ -704,6 +704,9 @@ async function addComment(pid){
       if(parentAuthor&&parentAuthor!==postAuthor[pid]) notify('reply',parentAuthor,{post_id:pid,comment_id:parent,text:text.slice(0,80)});
     }
     notify('comment',postAuthor[pid],{post_id:pid,text:text.slice(0,80)});
+    /* Everyone else already in this thread - the post author and the
+       parent author are handled above and excluded server-side. */
+    sb.rpc('notify_thread_participants',{p_comment_id:r.id}).then(()=>{}).catch(()=>{});
   }
   catch(e){toast('Comment failed');}
 }
