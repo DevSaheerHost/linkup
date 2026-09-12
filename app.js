@@ -389,6 +389,30 @@ async function loadSocialProof(posts,likes){
     Object.keys(byPost).forEach(pid=>{ const l=byPost[pid].map(i=>names[i]).filter(Boolean); if(l.length)socialProof[pid]=l; });
   }catch(e){}
 }
+/* "You might have missed": posts you scrolled past without engaging, from
+   people you actually follow or interact with. Rendered as its own strip
+   at the top of For You rather than mixed into the ranking, so the
+   seen-post suppression in get_feed_for_you stays exactly as it is. */
+async function renderMissedStrip(){
+  const host=$('missedStrip'); if(!host)return;
+  host.innerHTML='';
+  if(feedMode!=='all')return;
+  try{
+    const {data,error}=await sb.rpc('get_missed_posts',{page_size:3});
+    if(error) throw error;
+    const rows=data||[]; if(!rows.length)return;
+    const authorIds=[...new Set(rows.map(p=>p.author_id))];
+    const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url,is_verified').in('id',authorIds);
+    const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
+    const cards=rows.map(p=>{
+      const a=aMap[p.author_id]||{username:'user'};
+      const thumb=p.thumb_url||p.image_url||(p.photos&&p.photos[0])||'';
+      const art=thumb?`<img loading="lazy" src="${thumb}">`:`<span class="mcfallback">${icon(p.video_url?'reels':'image',22)}</span>`;
+      return `<div class="mcard" onclick="openPostView('${p.id}')">${art}<div class="mcname">${esc(a.username)}${vbadge(a)}</div></div>`;
+    }).join('');
+    host.innerHTML=`<div class="misshead">You might have missed</div><div class="missrow">${cards}</div>`;
+  }catch(e){}
+}
 function socialProofHtml(pid){
   const n=socialProof[pid]; if(!n||!n.length)return '';
   const first=`<b>${esc(n[0])}</b>`;
@@ -406,8 +430,8 @@ function skReel(){return `<div class="reel">${skBlock('100%','100%','0')}</div>`
 function skStories(n){return Array.from({length:n||5},()=>`<div class="scell">${skBlock('58px','58px','50%')}${skBlock('44px','10px','5px','margin-top:6px')}</div>`).join('');}
 async function loadFeed(){
   const box=$('sFeed');
-  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="feedPosts"></div>`;
-  renderFeedTabs(); loadStories(); loadFeedPosts(true);
+  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="missedStrip"></div><div id="feedPosts"></div>`;
+  renderFeedTabs(); loadStories(); renderMissedStrip(); loadFeedPosts(true);
 }
 let feedPage=1, feedLoading=false, feedDone=false, feedFollowIds=null, feedToken=0, feedMoreObs=null;
 let feedCursor=null; // {score,created_at,id} keyset cursor for the "For You" ranked feed
@@ -496,7 +520,7 @@ function armFeedPrefetch(){
   feedMoreObs.observe(target);
 }
 function renderFeedTabs(){const t=$('ftabs');if(!t)return;t.innerHTML=`<button class="${feedMode==='all'?'on':''}" onclick="setFeedMode('all')">For You</button><button class="${feedMode==='following'?'on':''}" onclick="setFeedMode('following')">Following</button>`;}
-function setFeedMode(m){feedMode=m;renderFeedTabs();loadFeedPosts(true);}
+function setFeedMode(m){feedMode=m;renderFeedTabs();renderMissedStrip();loadFeedPosts(true);}
 $('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ onFeedScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
 function applyVideoCrop(video,crop){
   if(!crop)return;

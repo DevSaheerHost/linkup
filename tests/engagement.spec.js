@@ -142,3 +142,16 @@ test('social proof names a follower who liked the post', async ({ page }) => {
   await expect(proof).toBeVisible({ timeout: 10000 });
   await expect(proof).toContainText('bestie');
 });
+
+test('"you might have missed" strip renders cards and is skipped on Following', async ({ page }) => {
+  const MISSED = { ...POST, id: 'cccccccc-0000-4000-8000-000000000001', caption: 'missed one', thumb_url: null, image_url: null };
+  await boot(page, { 'rpc/get_missed_posts': [MISSED] });
+
+  await expect(page.locator('#missedStrip .mcard')).toHaveCount(1, { timeout: 10000 });
+  await expect(page.locator('#missedStrip .misshead')).toContainText('You might have missed');
+
+  // Following is a chronological feed of people you chose - resurfacing
+  // there would just be noise, so the strip stays out of it.
+  await page.evaluate(() => window.setFeedMode('following'));
+  await expect(page.locator('#missedStrip .mcard')).toHaveCount(0);
+});
