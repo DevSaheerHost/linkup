@@ -2009,6 +2009,34 @@ $('pmCancel').onclick=closePostMenu;
 $('postMenuWrap').onclick=e=>{if(e.target.id==='postMenuWrap')closePostMenu();};
 $('pmDelete').onclick=async()=>{const id=pmId;closePostMenu();if(!id)return;try{await sb.from('posts').delete().eq('id',id);const el=$('post_'+id);if(el)el.remove();if($('postView').classList.contains('on')){closePostView();if(currentScreen==='Search')runSearch($('searchInput').value.trim());else if(currentScreen==='Profile')loadProfile(me().id);else loadFeedPosts(true);}toast('Post deleted');}catch(e){toast('Delete failed: '+sbErr(e));}};
 $('pmRegen').onclick=()=>{const id=pmId;closePostMenu();regenThumb(id);};
+$('pmInsights').onclick=()=>{const id=pmId;closePostMenu();openInsights(id);};
+$('insightsClose').onclick=closeInsights;
+$('insightsWrap').onclick=e=>{if(e.target.id==='insightsWrap')closeInsights();};
+function closeInsights(){$('insightsWrap').classList.remove('on');}
+function insightsRow(label,val){return `<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--mut)">${label}</span><b style="font-size:16px">${val}</b></div>`;}
+async function openInsights(pid){
+  if(!pid)return;
+  $('insightsWrap').classList.add('on'); rearm();
+  const body=$('insightsBody'); body.innerHTML=insightsRow('Views','…')+insightsRow('Likes','…')+insightsRow('Comments','…')+insightsRow('From people you follow','…');
+  try{
+    const [{count:views},{count:likes},{count:comments},{data:viewers}]=await Promise.all([
+      sb.from('postviews').select('id',{count:'exact',head:true}).eq('post_id',pid),
+      sb.from('likes').select('id',{count:'exact',head:true}).eq('post_id',pid),
+      sb.from('comments').select('id',{count:'exact',head:true}).eq('post_id',pid),
+      sb.from('postviews').select('user_id').eq('post_id',pid)
+    ]);
+    let fromFollowing=0;
+    try{
+      const viewerIds=[...new Set((viewers||[]).map(v=>v.user_id))];
+      if(viewerIds.length){
+        const {count}=await sb.from('follows').select('id',{count:'exact',head:true}).eq('follower_id',me().id).in('following_id',viewerIds);
+        fromFollowing=count||0;
+      }
+    }catch(e){}
+    if(!$('insightsWrap').classList.contains('on'))return;
+    body.innerHTML=insightsRow('Views',views||0)+insightsRow('Likes',likes||0)+insightsRow('Comments',comments||0)+insightsRow('From people you follow',fromFollowing);
+  }catch(e){ body.innerHTML='<div class="empty">Could not load insights</div>'; }
+}
 async function regenThumb(pid){
   if(!pid)return; toast('Regenerating thumbnail…');
   try{
@@ -2240,6 +2268,7 @@ function topLayerClose(){
   if($('gcall').classList.contains('on'))return true;
   if($('call').classList.contains('on'))return true;
   if($('capWrap').classList.contains('on')){$('capWrap').classList.remove('on');capOnSave=null;return true;}
+  if($('insightsWrap').classList.contains('on')){closeInsights();return true;}
   if($('postMenuWrap').classList.contains('on')){closePostMenu();return true;}
   if($('msgMenuWrap').classList.contains('on')){closeMsgMenu();return true;}
   if($('actMenuWrap').classList.contains('on')){closeActMenu();return true;}
