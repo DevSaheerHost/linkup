@@ -773,10 +773,20 @@ function openUserMenu(uid){
 function openOtherPostMenu(pid,uid,uname){
   const blocked=blockedIds.has(uid);
   $('actMenu').innerHTML=
+    `<button onclick="closeActMenu();notInterested('${pid}')">Not interested</button>`+
     `<button onclick="closeActMenu();reportTarget('post','${pid}')">Report post</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',false)">${blocked?'Unblock @'+esc(uname):'Block @'+esc(uname)}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
   $('actMenuWrap').classList.add('on');rearm();
+}
+async function notInterested(pid){
+  try{
+    const {error}=await sb.rpc('mark_not_interested',{p_post_id:pid});
+    if(error) throw error;
+    const el=$('post_'+pid); if(el)el.remove();
+    if(pvId===pid)closePostView();
+    toast("You'll see less like this");
+  }catch(e){ toast('Could not update: '+sbErr(e)); }
 }
 
 /* ================= REELS ================= */
