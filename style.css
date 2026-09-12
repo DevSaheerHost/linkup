@@ -44,6 +44,9 @@
   .phead{display:flex;align-items:center;gap:10px;padding:10px 14px}
   .phead .nm{font-weight:600;font-size:14px}
   .pimg{width:100%;background:#000;aspect-ratio:1/1;object-fit:cover}
+  /* Feed videos: show the whole frame (letterboxed on the black background)
+     instead of cropping to fill the square, like .reelvid already does. */
+  .pimg.feedvid{object-fit:contain}
   .pacts{display:flex;gap:18px;padding:10px 14px 4px;font-size:24px}
   .pacts span{cursor:pointer}
   .liked{color:var(--accent2)}

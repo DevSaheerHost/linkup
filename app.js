@@ -435,7 +435,10 @@ function applyVideoCrop(video,crop){
   if(!crop)return;
   const nw=video.videoWidth,nh=video.videoHeight; if(!nw||!nh)return;
   const box=video.parentElement, W=box.clientWidth||1, H=box.clientHeight||W;
-  const scale=Math.max(W/nw,H/nh)*(crop.zoom||1);
+  /* "Contain", not "cover" - matches makeVideoFramer()'s base scale so the
+     unzoomed (zoom=1) default replayed here shows the whole frame instead
+     of cropping it to fill the square. */
+  const scale=Math.min(W/nw,H/nh)*(crop.zoom||1);
   const cx=(crop.fx||0.5)*nw, cy=(crop.fy||0.5)*nh;
   video.style.position='absolute';
   video.style.width=(nw*scale)+'px'; video.style.height=(nh*scale)+'px';
@@ -910,13 +913,26 @@ function makeImageCropper(canvas,img,W,H){
    a canvas redraw ("visual reframe" - the source file is never re-encoded). */
 function makeVideoFramer(container,video,W,H){
   const nw=video.videoWidth||W, nh=video.videoHeight||H;
-  const state={zoom:1,cx:nw/2,cy:nh/2,cover:Math.max(W/nw,H/nh),W,H};
+  /* Base scale is "contain" (Math.min), not "cover" - every upload gets a
+     video_crop row by default even if the user never touches the zoom
+     slider, so a "cover" default here would silently crop every video post
+     to fill the square. Starting at zoom=1 now shows the whole frame
+     (letterboxed on the shorter axis); zooming in (still up to 4x below)
+     is an explicit choice to crop closer, same gesture UI as before. */
+  const state={zoom:1,cx:nw/2,cy:nh/2,cover:Math.min(W/nw,H/nh),W,H};
   function apply(){
     const scale=state.cover*state.zoom;
+    const rw=nw*scale, rh=nh*scale;
     const hw=(state.W/scale)/2, hh=(state.H/scale)/2;
-    state.cx=Math.max(hw,Math.min(nw-hw,state.cx));
-    state.cy=Math.max(hh,Math.min(nh-hh,state.cy));
-    video.style.width=(nw*scale)+'px'; video.style.height=(nh*scale)+'px';
+    /* Only clamp/pan an axis that's actually been zoomed past the box size
+       (cropped). An axis still fully contained within the box (letterboxed
+       - always true for at least one axis at the zoom=1 default) has
+       nothing to pan, so pin it dead-center instead of running it through
+       the crop-only clamp math below, which assumes there's a valid pan
+       range and would otherwise pull it off-center. */
+    state.cx = rw>state.W ? Math.max(hw,Math.min(nw-hw,state.cx)) : nw/2;
+    state.cy = rh>state.H ? Math.max(hh,Math.min(nh-hh,state.cy)) : nh/2;
+    video.style.width=rw+'px'; video.style.height=rh+'px';
     video.style.left=(state.W/2-state.cx*scale)+'px'; video.style.top=(state.H/2-state.cy*scale)+'px';
   }
   function setZoom(z){ state.zoom=Math.max(1,Math.min(4,z)); apply(); }
