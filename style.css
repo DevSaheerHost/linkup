@@ -81,6 +81,7 @@
   .last{flex:1;min-width:0}
   .last .snip{color:var(--mut);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .badge{background:var(--accent2);color:#fff;border-radius:10px;font-size:11px;padding:1px 7px;font-weight:700}
+  .vbadge{display:inline-flex;vertical-align:middle;margin-left:3px;position:relative;top:-1px}
 
   /* create post */
   .create{padding:18px 16px}

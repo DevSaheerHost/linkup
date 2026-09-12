@@ -1,0 +1,13 @@
+{
+  "name": "linkup",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Static app - no build step. package.json exists only to run the Playwright smoke tests under tests/.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@supabase/supabase-js": "^2"
+  }
+}
