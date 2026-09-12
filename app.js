@@ -99,9 +99,11 @@ const PATHS={
   qr:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 19v2"/>',
   pin:'<path d="M9 3h6l-1.2 6.5 3.2 2.5v2H7v-2l3.2-2.5L9 3z"/><path d="M12 14v7"/>',
   belloff:'<path d="M9 5a5 5 0 0 1 8 4v2M18 13v1l2 3H8"/><path d="M9.5 19a2.5 2.5 0 0 0 5 0"/><path d="M3 3l18 18"/>',
-  poll:'<path d="M3 20h18"/><path d="M6 20v-6M12 20V5M18 20v-9"/>'
+  poll:'<path d="M3 20h18"/><path d="M6 20v-6M12 20V5M18 20v-9"/>',
+  verified:'<path d="M12 2l2.4 1.6 2.8-.4 1 2.7 2.5 1.4-.6 2.8.6 2.8-2.5 1.4-1 2.7-2.8-.4L12 22l-2.4-1.6-2.8.4-1-2.7-2.5-1.4.6-2.8-.6-2.8 2.5-1.4 1-2.7 2.8.4z" fill="currentColor" stroke="none"/><path d="M8.4 12.2l2.3 2.3 4.6-4.9" stroke="#fff" stroke-width="2.2"/>'
 };
 function icon(name,size,opts){size=size||24;opts=opts||{};const fill=opts.fill||'none';return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="${fill}" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="display:block">${PATHS[name]}</svg>`;}
+function vbadge(u){ return (u&&u.is_verified)?`<span class="vbadge" title="Verified" style="color:var(--accent)">${icon('verified',14)}</span>`:''; }
 function applyStaticIcons(){
   const map={Feed:'home',Search:'search',Create:'plus',Reels:'reels',Chats:'message'};
   document.querySelectorAll('nav button').forEach(b=>{const n=map[b.dataset.s];if(n)b.innerHTML=icon(n,26);});
@@ -390,7 +392,7 @@ async function loadFeedPosts(reset){
       }
       if(myTok!==feedToken){feedLoading=false;return;}
       const from=(feedPage-1)*9, to=feedPage*9-1;
-      let q=sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)',{count:'exact'}).order('created_at',{ascending:false}).range(from,to);
+      let q=sb.from('posts').select('*, author:author_id(id,username,name,avatar_url,is_verified)',{count:'exact'}).order('created_at',{ascending:false}).range(from,to);
       if(feedFollowIds) q=q.in('author_id',feedFollowIds);
       const {data:items,count:c,error}=await q;
       if(error) throw error;
@@ -414,7 +416,7 @@ async function loadFeedPosts(reset){
         const last=posts[posts.length-1];
         feedCursor={score:last.score,created_at:last.created_at,id:last.id};
         const authorIds=[...new Set(posts.map(p=>p.author_id))];
-        const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url').in('id',authorIds);
+        const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url,is_verified').in('id',authorIds);
         const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
         posts.forEach(p=>p.author=aMap[p.author_id]);
       }
@@ -508,7 +510,7 @@ function renderPost(p,cmts,full){
   const shown=rootsShown.map(r=>commentBlock(r,tree.childrenOf[r.id]||[],full,p.id)).join('');
   const more=(!full&&cmts.length>rootsShown.length)?`<div class="viewall" onclick="openPostView('${p.id}')" style="cursor:pointer;color:var(--mut);margin-bottom:2px">View all ${cmts.length} comments</div>`:'';
   return `<div class="post" id="post_${p.id}" data-pid="${p.id}">
-    <div class="phead">${avatarHtml(a,34)}<div><div class="nm" onclick="openProfile('${a.id}')" style="cursor:pointer">${esc(a.username)}</div>${p.audience==='close'?`<div class="cfbadge">${icon('group',11)} Close Friends</div>`:''}</div>
+    <div class="phead">${avatarHtml(a,34)}<div><div class="nm" onclick="openProfile('${a.id}')" style="cursor:pointer">${esc(a.username)}${vbadge(a)}</div>${p.audience==='close'?`<div class="cfbadge">${icon('group',11)} Close Friends</div>`:''}</div>
       <div style="margin-left:auto;color:var(--mut);font-size:12px">${timeAgo(p.created_at)}</div>
       ${a.id===me().id?`<button class="pmore" onclick="openPostMenu('${p.id}')">${icon('more',20)}</button>`:`<button class="pmore" onclick="openOtherPostMenu('${p.id}','${a.id}','${esc(a.username)}')">${icon('more',20)}</button>`}</div>
     ${p.poll?pollBlock(p):postMedia(p)}
@@ -802,7 +804,7 @@ async function loadReels(reset){
       if(reelStartId){
         const want=reelStartId; reelStartId=null;
         try{
-          const {data:sp}=await sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)').eq('id',want).single();
+          const {data:sp}=await sb.from('posts').select('*, author:author_id(id,username,name,avatar_url,is_verified)').eq('id',want).single();
           if(tok!==reelTok){reelLoading=false;return;}
           if(sp&&sp.video_url){ await reelPrep([sp]); box.insertAdjacentHTML('beforeend',reelHTML(sp)); startedId=sp.id; }
         }catch(e){}
@@ -831,7 +833,7 @@ async function loadReels(reset){
     if(reelPage===1 && !posts.length && !box.querySelector('.reel') && !raw.length){box.innerHTML='<div class="empty">No reels yet.<br>Post a video to start!</div>';reelDone=true;reelLoading=false;return;}
     if(posts.length){
       const authorIds=[...new Set(posts.map(p=>p.author_id))];
-      const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url').in('id',authorIds);
+      const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url,is_verified').in('id',authorIds);
       const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
       posts.forEach(p=>p.author=aMap[p.author_id]);
       await reelPrep(posts);
@@ -1165,7 +1167,7 @@ async function runSearch(q){
   try{
     const {data:userRows}=await sb.from('profiles').select('*').or('username.ilike.%'+eq+'%,name.ilike.%'+eq+'%').limit(25);
     const users=(userRows||[]).filter(u=>u.id!==me().id&&!blockedIds.has(u.id));
-    let html=users.length?('<div class="slabel">People</div>'+users.map(u=>`<div class="row" onclick="openProfile('${u.id}')">${avatarHtml(u,42)}<div><div class="nm">${esc(u.username)}</div><div class="mut">${esc(u.name||'')}</div></div></div>`).join('')):'';
+    let html=users.length?('<div class="slabel">People</div>'+users.map(u=>`<div class="row" onclick="openProfile('${u.id}')">${avatarHtml(u,42)}<div><div class="nm">${esc(u.username)}${vbadge(u)}</div><div class="mut">${esc(u.name||'')}</div></div></div>`).join('')):'';
     let posts=[];
     try{ const {data}=await sb.from('posts').select('*').ilike('caption','%'+eq+'%').order('created_at',{ascending:false}).limit(18); posts=(data||[]).filter(p=>!blockedIds.has(p.author_id)); }catch(e){}
     if(posts.length) html+='<div class="slabel">Posts</div><div class="grid">'+posts.map(gridCell).join('')+'</div>';
@@ -1216,7 +1218,7 @@ async function loadProfile(uid){
         :`<button id="followBtn" class="${followId?'':'grad'}" ${followId?'':'style="color:#fff"'} onclick="toggleFollow('${uid}','${followId||''}')">${followId?'Following':'Follow'}</button><button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
     box.innerHTML=`<div class="prof">
       <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div onclick="openFollowList('${uid}','followers')" style="cursor:pointer"><b>${followersN}</b><span>followers</span></div><div onclick="openFollowList('${uid}','following')" style="cursor:pointer"><b>${followingN}</b><span>following</span></div></div></div>
-      <div class="pname">${esc(u.name||u.username)}</div>
+      <div class="pname">${esc(u.name||u.username)}${vbadge(u)}</div>
       <div class="mut" style="color:var(--mut);font-size:13px;margin-bottom:6px">@${esc(u.username)}</div>
       ${(!isMe&&!blocked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
       <div class="pbio">${esc(u.bio||'')}</div>
@@ -2205,7 +2207,7 @@ async function openPostView(pid){
   $('postView').classList.add('on');rearm();
   const body=$('postViewBody'); body.innerHTML=skPost();
   try{
-    const {data:p,error}=await sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)').eq('id',pid).single();
+    const {data:p,error}=await sb.from('posts').select('*, author:author_id(id,username,name,avatar_url,is_verified)').eq('id',pid).single();
     if(error) throw error;
     const {data:likes}=await sb.from('likes').select('*').eq('post_id',pid);
     const {data:comments}=await sb.from('comments').select('*, user:user_id(id,username,name,avatar_url)').eq('post_id',pid).order('created_at');
