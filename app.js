@@ -2039,7 +2039,7 @@ function buildStoryView(){
   const bars=svList.map((_,i)=>`<div class="sbar"><i id="sbar_${i}"></i></div>`).join('');
   const x='<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   $('storyView').innerHTML=`<div class="sbars">${bars}</div>
-    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}</div><button class="sclose" onclick="closeStory()">${x}</button></div>
+    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}</div><span class="sleft" id="svLeft"></span><button class="sclose" onclick="closeStory()">${x}</button></div>
     <div class="simg" id="svImg"></div>
     <div class="szones"><div onclick="prevStory()"></div><div onclick="nextStory()"></div></div>
     <div id="svTags" style="position:absolute;bottom:${svUser.id===me().id?'84px':'134px'};left:16px;right:80px;color:#fff;font-size:13px;z-index:3;text-shadow:0 1px 4px #000"></div>
@@ -2051,6 +2051,8 @@ function showStoryFrame(){
   $('svImg').innerHTML=`<img class="blur-load" src="${s.image_url}" onload="this.classList.add('loaded')">`;
   svList.forEach((_,i)=>{const b=$('sbar_'+i);if(b){b.style.transition='none';b.style.width=i<svIdx?'100%':'0';}});
   const tg=$('svTags'); if(tg)tg.innerHTML=storyTagsLine(s.tags);
+  const lf=$('svLeft');
+  if(lf){ const t=storyTimeLeft(s.created_at); lf.textContent=t?t.label:''; lf.classList.toggle('urgent',!!(t&&t.urgent)); }
   if(svUser.id!==me().id){
     refreshStoryLike();
     if(!storyViewed.has(s.id)){ storyViewed.add(s.id); sb.from('story_views').upsert({story_id:s.id,viewer_id:me().id},{onConflict:'story_id,viewer_id',ignoreDuplicates:true}).then(()=>{}).catch(()=>{}); }
@@ -2073,20 +2075,61 @@ async function sLike(){
   const s=svList[svIdx],b=$('sLikeBtn'); if(!s||!b)return; const lid=b.dataset.lid;
   try{
     if(lid){ await sb.from('story_likes').delete().eq('id',lid); b.dataset.lid=''; b.classList.remove('liked'); const g=b.querySelector('svg'); if(g)g.setAttribute('fill','none'); }
-    else{ const {data:r}=await sb.from('story_likes').insert({story_id:s.id,user_id:me().id}).select().single(); b.dataset.lid=r.id; b.classList.add('liked'); const g=b.querySelector('svg'); if(g)g.setAttribute('fill','currentColor'); if(svUser&&svUser.id!==me().id)notify('storylike',svUser.id,{}); }
+    else{ const {data:r}=await sb.from('story_likes').insert({story_id:s.id,user_id:me().id,reaction:'love'}).select().single(); b.dataset.lid=r.id; b.classList.add('liked'); const g=b.querySelector('svg'); if(g)g.setAttribute('fill','currentColor'); if(svUser&&svUser.id!==me().id)notify('storylike',svUser.id,{}); }
   }catch(e){toast('Like failed: '+sbErr(e));}
 }
 async function sReply(){ const inp=$('sReplyInput'); if(!inp)return; const t=inp.value.trim(); if(!t||!svUser)return; inp.value=''; try{ const key=convKey(me().id,svUser.id); await sb.from('messages').insert({sender_id:me().id,receiver_id:svUser.id,conversation:key,text:t}); toast('Reply sent'); }catch(e){toast('Reply failed: '+sbErr(e));} clearTimeout(svTimer); svTimer=setTimeout(nextStory,3000); }
 const STORY_EMOJI={like:0x1F44D,love:0x2764,haha:0x1F602,wow:0x1F62E,sad:0x1F622,fire:0x1F525};
 async function sReact(key){
-  if(!svUser)return; clearTimeout(svTimer);
+  const s=svList[svIdx];
+  if(!svUser||!s)return; clearTimeout(svTimer);
   const emoji=String.fromCodePoint(STORY_EMOJI[key]||0x2764);
-  try{ const k=convKey(me().id,svUser.id); await sb.from('messages').insert({sender_id:me().id,receiver_id:svUser.id,conversation:k,text:emoji}); toast('Reaction sent'); if(svUser.id!==me().id)notify('storylike',svUser.id,{}); }
+  try{
+    /* Record it as a real reaction as well as DM-ing the emoji. The DM is
+       what the viewer expects (that's how story reactions read), but on
+       its own it left the author no way to see reactions in aggregate -
+       the story just showed a view count. */
+    await sb.from('story_likes').upsert({story_id:s.id,user_id:me().id,reaction:key},{onConflict:'story_id,user_id'});
+    const k=convKey(me().id,svUser.id);
+    await sb.from('messages').insert({sender_id:me().id,receiver_id:svUser.id,conversation:k,text:emoji});
+    toast('Reaction sent');
+    if(svUser.id!==me().id)notify('storylike',svUser.id,{});
+    refreshStoryLike();
+  }
   catch(e){ toast('Reaction failed: '+sbErr(e)); }
   svTimer=setTimeout(nextStory,2500);
 }
 async function delStory(){ const s=svList[svIdx]; if(!s)return; try{ await sb.from('stories').delete().eq('id',s.id); svList.splice(svIdx,1); toast('Story deleted'); loadStories(); if(!svList.length){closeStory();return;} if(svIdx>=svList.length)svIdx=svList.length-1; buildStoryView(); playStory(); }catch(e){toast('Delete failed');} }
-async function updateSeen(storyId){ const el=$('svSeen'); if(!el)return; el.dataset.story=storyId; el.textContent='Seen by …'; try{ const {count}=await sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId); el.textContent='Seen by '+(count||0); }catch(e){ el.textContent=''; } }
+/* Author-side feedback loop: raw view count, how many of those landed in
+   the last hour (the "it's happening right now" pull), and how many people
+   reacted - reactions were previously invisible to the author entirely. */
+async function updateSeen(storyId){
+  const el=$('svSeen'); if(!el)return;
+  el.dataset.story=storyId; el.textContent='Seen by …';
+  try{
+    const hourAgo=new Date(Date.now()-3600000).toISOString();
+    const [{count:views},{count:recent},{count:reacts}]=await Promise.all([
+      sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId),
+      sb.from('story_views').select('id',{count:'exact',head:true}).eq('story_id',storyId).gte('created_at',hourAgo),
+      sb.from('story_likes').select('id',{count:'exact',head:true}).eq('story_id',storyId)
+    ]);
+    let txt='Seen by '+(views||0);
+    if(recent)txt+=' · '+recent+' in the last hour';
+    if(reacts)txt+=' · '+reacts+' reaction'+(reacts===1?'':'s');
+    el.textContent=txt;
+  }catch(e){ el.textContent=''; }
+}
+/* Stories are gone 24h after they're posted (loadStories only fetches that
+   window). Showing the time left is the whole point of an ephemeral post -
+   it's what turns "I'll look later" into "I'll look now". */
+function storyTimeLeft(createdAt){
+  const msLeft=86400000-(Date.now()-new Date(createdAt).getTime());
+  if(msLeft<=0)return null;
+  const mins=Math.floor(msLeft/60000);
+  if(mins<60)return {label:mins+'m left',urgent:true};
+  const hrs=Math.floor(mins/60);
+  return {label:hrs+'h left',urgent:hrs<3};
+}
 async function openSeenList(){
   const el=$('svSeen'); const sid=el&&el.dataset.story; if(!sid)return; clearTimeout(svTimer);
   $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Viewers'; const body=$('listBody'); body.innerHTML=skRows(8);

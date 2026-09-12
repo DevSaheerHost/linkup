@@ -229,6 +229,8 @@
   .sbar i{display:block;height:100%;width:0;background:#fff}
   .shead{display:flex;align-items:center;gap:10px;padding:10px 14px;color:#fff;position:relative;z-index:2}
   .shead .nm{font-weight:600;font-size:14px}
+  .sleft{font-size:12px;color:rgba(255,255,255,.7)}
+  .sleft.urgent{color:#ff7a3d;font-weight:600}
   .simg{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .simg img{max-width:100%;max-height:100%;object-fit:contain}
   .szones{position:absolute;top:64px;left:0;right:0;bottom:0;display:flex;z-index:1}

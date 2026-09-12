@@ -76,6 +76,25 @@ test('long-pressing the like button opens the reaction picker', async ({ page })
   await expect(page.locator('#postReactRow .rbtn')).toHaveCount(6);
 });
 
+test('story countdown reports time left and flags the urgent window', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(() => {
+    const ago = (h) => new Date(Date.now() - h * 3600000).toISOString();
+    return {
+      fresh: window.storyTimeLeft(ago(0)),
+      threeLeft: window.storyTimeLeft(ago(21)),
+      twoLeft: window.storyTimeLeft(ago(22)),
+      minutes: window.storyTimeLeft(ago(23.5)),
+      expired: window.storyTimeLeft(ago(25)),
+    };
+  });
+  expect(r.fresh.urgent).toBe(false);
+  expect(r.threeLeft.urgent).toBe(false);      // exactly 3h is not yet urgent
+  expect(r.twoLeft).toEqual({ label: '2h left', urgent: true });
+  expect(r.minutes).toEqual({ label: '30m left', urgent: true });
+  expect(r.expired).toBeNull();                 // past 24h there's nothing to show
+});
+
 test('social proof names a follower who liked the post', async ({ page }) => {
   await boot(page);
   const proof = page.locator(`#post_${POST_ID} .sproof`);
