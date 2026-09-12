@@ -343,6 +343,9 @@
   .prchips .rchip{background:var(--soft)}
   .sproof{font-size:13px;color:var(--mut);margin-bottom:3px}
   .sproof b{color:var(--txt);font-weight:600}
+  .nmrow{display:flex;align-items:center;gap:5px}
+  .streak{display:inline-flex;align-items:center;gap:1px;color:#ff7a3d;vertical-align:middle;margin-left:4px}
+  .streak i{font-style:normal;font-size:11px;font-weight:700}
   .bub.flash{animation:mflash 1.2s ease}
   @keyframes mflash{0%{box-shadow:0 0 0 3px var(--accent)}100%{box-shadow:0 0 0 0 transparent}}
   .replybar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--soft);border-top:1px solid var(--line)}

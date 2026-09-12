@@ -76,6 +76,16 @@ test('long-pressing the like button opens the reaction picker', async ({ page })
   await expect(page.locator('#postReactRow .rbtn')).toHaveCount(6);
 });
 
+test('DM streak badge shows from 2 days and stays hidden below that', async ({ page }) => {
+  await boot(page, { 'rpc/my_dm_streaks': [{ other_id: FRIEND, streak: 5 }, { other_id: AUTHOR, streak: 1 }] });
+  const r = await page.evaluate(async ([friend, author]) => {
+    await window.loadDmStreaks();
+    return { friend: window.streakHtml(friend), author: window.streakHtml(author) };
+  }, [FRIEND, AUTHOR]);
+  expect(r.friend).toContain('>5<');        // 5-day streak renders the count
+  expect(r.author).toBe('');                // a 1-day "streak" is not a streak
+});
+
 test('story countdown reports time left and flags the urgent window', async ({ page }) => {
   await boot(page);
   const r = await page.evaluate(() => {

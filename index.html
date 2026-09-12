@@ -32,7 +32,7 @@
 <meta name="twitter:title" content="LinkUp">
 <meta name="twitter:description" content="Share moments, chat, and call your friends on LinkUp.">
 <meta name="twitter:image" content="https://debian.taile6f55d.ts.net/og.png">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -102,7 +102,7 @@
   <div class="chead">
     <span class="back" id="chatBack"></span>
     <span id="chatAv"></span>
-    <div><div class="nm" id="chatName" style="font-weight:600"></div><div id="chatStatus" style="font-size:12px;color:var(--mut)"><span class="odot" id="chatDot"></span><span id="chatStatusTxt"></span></div></div>
+    <div><div class="nmrow"><div class="nm" id="chatName" style="font-weight:600"></div><span id="chatStreak"></span></div><div id="chatStatus" style="font-size:12px;color:var(--mut)"><span class="odot" id="chatDot"></span><span id="chatStatusTxt"></span></div></div>
     <div id="callBtns" style="margin-left:auto;display:flex;gap:2px">
       <button class="hicon" id="btnChatSearch" onclick="toggleChatSearch()"></button>
       <button class="hicon" id="btnVoice" onclick="placeCall('audio')"></button>
@@ -225,6 +225,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=22"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>

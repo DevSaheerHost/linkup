@@ -1423,6 +1423,7 @@ async function loadChats(){
   const box=$('sChats');box.innerHTML=skRows(7);
   try{
     await loadMyGroups();
+    await loadDmStreaks();
     const {data:msgRows,error}=await sb.from('messages').select('*').or('sender_id.eq.'+me().id+',receiver_id.eq.'+me().id).is('group_id',null).order('created_at',{ascending:false}).limit(150);
     if(error) throw error;
     const msgs=msgRows||[];
@@ -1466,7 +1467,24 @@ function filterChats(q){
   else if(none){ none.style.display='none'; }
 }
 function callSnip(m){const p=(m.call||'').split(':'),k=p[0]||'audio',st=p[1]||'ended';if(st==='missed')return 'Missed '+(k==='video'?'video ':'')+'call';if(st==='declined')return 'Call declined';return (k==='video'?'Video':'Voice')+' call';}
-function dmRow(id,u,m,uc){const snip=m.call?callSnip(m):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'');const mine=(m.sender_id===me().id&&!m.call)?'You: ':'';const pin=getPinned().has(id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:`<div class="mut">${timeAgo(m.created_at)}</div>`;return `<div class="row" data-id="${id}" data-name="${esc(((u.username||'')+' '+(u.name||'')).toLowerCase())}" onclick="openChat('${id}')"><div class="cav">${avatarHtml(u,48)}${isOnline(u)?'<span class="cdot"></span>':''}</div><div class="last"><div class="nm">${esc(u.username)}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${mine}${snip}</div></div>${right}</div>`;}
+function dmRow(id,u,m,uc){const snip=m.call?callSnip(m):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'');const mine=(m.sender_id===me().id&&!m.call)?'You: ':'';const pin=getPinned().has(id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const stk=streakHtml(id);const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:`<div class="mut">${timeAgo(m.created_at)}</div>`;return `<div class="row" data-id="${id}" data-name="${esc(((u.username||'')+' '+(u.name||'')).toLowerCase())}" onclick="openChat('${id}')"><div class="cav">${avatarHtml(u,48)}${isOnline(u)?'<span class="cdot"></span>':''}</div><div class="last"><div class="nm">${esc(u.username)}${stk}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${mine}${snip}</div></div>${right}</div>`;}
+/* DM streaks: consecutive days you and one other person BOTH messaged.
+   Shown from 2 days - a single day isn't a streak, and showing "1" on
+   every new conversation would make the flame meaningless. */
+let dmStreaks={};
+const STREAK_MIN=2;
+async function loadDmStreaks(){
+  try{
+    const {data,error}=await sb.rpc('my_dm_streaks');
+    if(error) throw error;
+    dmStreaks={}; (data||[]).forEach(r=>{dmStreaks[r.other_id]=r.streak;});
+  }catch(e){ dmStreaks={}; }
+}
+function streakHtml(uid){
+  const n=dmStreaks[uid]||0;
+  if(n<STREAK_MIN)return '';
+  return `<span class="streak" title="${n}-day streak">${icon('rfire',13,{fill:'currentColor'})}<i>${n}</i></span>`;
+}
 function groupRow(g,m,uc){const snip=m?(m.sys?esc(m.sys):m.audio_url?'Voice message':m.image_url?'Photo':m.post_id?'Shared a post':esc(m.text||'')):'No messages yet';const pre=(m&&m.sender_id===me().id&&!m.sys)?'You: ':'';const pin=getPinned().has(g.id)?`<span class="rowic">${icon('pin',14)}</span>`:'';const mu=getMuted().has(g.id)?`<span class="rowic">${icon('belloff',14)}</span>`:'';const right=uc>0?`<div class="cbadge">${uc>99?'99+':uc}</div>`:(m?`<div class="mut">${timeAgo(m.created_at)}</div>`:'');return `<div class="row" data-id="${g.id}" data-name="${esc((g.name||'group').toLowerCase())}" onclick="openGroup('${g.id}')"><div class="cav">${groupAvatar(g,48)}</div><div class="last"><div class="nm">${esc(g.name||'Group')}${pin}${mu}</div><div class="snip ${uc>0?'unread':''}">${pre}${snip}</div></div>${right}</div>`;}
 
 /* ================= CHAT THREAD ================= */
@@ -2479,6 +2497,10 @@ async function openChat(uid){
   typingRecId=null; lastTypingSent=0; $('typing').style.display='none';
   $('chatAv').innerHTML=avatarHtml(chatUser,38);
   $('chatName').textContent=chatUser.name||chatUser.username;
+  /* Show the cached streak immediately, then refresh - opening the chat is
+     exactly when it may have just changed (they replied since you looked). */
+  $('chatStreak').innerHTML=streakHtml(chatUser.id);
+  loadDmStreaks().then(()=>{ if(chatUser&&$('chatStreak'))$('chatStreak').innerHTML=streakHtml(chatUser.id); });
   renderPresence();
   $('chatAv').onclick=null; $('chatName').onclick=null;
   $('callBtns').style.display='flex';
