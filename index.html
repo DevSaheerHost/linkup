@@ -32,7 +32,7 @@
 <meta name="twitter:title" content="LinkUp">
 <meta name="twitter:description" content="Share moments, chat, and call your friends on LinkUp.">
 <meta name="twitter:image" content="https://debian.taile6f55d.ts.net/og.png">
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -80,6 +80,7 @@
         <button id="audAll" class="audbtn on" onclick="setAudience('public')">Everyone</button>
         <button id="audClose" class="audbtn" onclick="setAudience('close')">Close Friends</button>
       </div>
+      <div class="audhint" id="audHint"></div>
       <button class="btn grad" id="shareBtn">Share</button>
       <button class="btn" onclick="openPollCompose()" style="background:var(--soft);margin-top:8px">Create a poll instead</button>
     </section>
@@ -225,6 +226,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

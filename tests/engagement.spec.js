@@ -86,6 +86,37 @@ test('DM streak badge shows from 2 days and stays hidden below that', async ({ p
   expect(r.author).toBe('');                // a 1-day "streak" is not a streak
 });
 
+test('close-friends nudge appears only when you have close friends, and switches audience', async ({ page }) => {
+  await boot(page);
+
+  // No close friends yet -> no nudge (it would be a dead end).
+  const empty = await page.evaluate(() => { window.renderAudHint(); return document.getElementById('audHint').innerHTML; });
+  expect(empty).toBe('');
+
+  // With a close-friends list, the nudge shows and switches the audience.
+  // Loaded through the real path - the module-scoped set can't be poked
+  // at from window, and going through loadCloseFriends() tests more anyway.
+  await page.route('**/rest/v1/closefriends*', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'cf1', owner_id: ME, friend_id: FRIEND }]) })
+  );
+  const after = await page.evaluate(async () => {
+    await window.loadCloseFriends();
+    window.setAudience('public');
+    const shown = document.getElementById('audHint').innerHTML;
+    document.querySelector('#audHint b').click();
+    return {
+      shown,
+      closeSelected: document.getElementById('audClose').classList.contains('on'),
+      everyoneSelected: document.getElementById('audAll').classList.contains('on'),
+      hintAfter: document.getElementById('audHint').innerHTML,
+    };
+  });
+  expect(after.shown).toContain('Close Friends');
+  expect(after.closeSelected).toBe(true);
+  expect(after.everyoneSelected).toBe(false);
+  expect(after.hintAfter).toBe('');      // once switched, stop nagging
+});
+
 test('story countdown reports time left and flags the urgent window', async ({ page }) => {
   await boot(page);
   const r = await page.evaluate(() => {

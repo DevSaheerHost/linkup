@@ -351,6 +351,7 @@ function show(s){
   if(s==='Chats')loadChats();
   if(s==='Profile')loadProfile(me().id);
   if(s==='Search'){$('searchInput').focus();runSearch($('searchInput').value.trim());}
+  if(s==='Create')renderAudHint();
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>show(b.dataset.s));
 $('refreshBtn').onclick=()=>show(currentScreen);
@@ -765,6 +766,7 @@ async function loadCloseFriends(){
     if(error) throw error;
     closeFriendIds=new Set(); cfMap={};
     (rows||[]).forEach(r=>{ closeFriendIds.add(r.friend_id); cfMap[r.friend_id]=r.id; });
+    renderAudHint();   // the hint depends on having a close-friends list
   }catch(e){ console.warn('closefriends read failed:',sbErr(e)); }
 }
 async function toggleCloseFriend(uid){
@@ -774,7 +776,16 @@ async function toggleCloseFriend(uid){
     else { const id=cfMap[uid]; if(id)await sb.from('closefriends').delete().eq('id',id); closeFriendIds.delete(uid); delete cfMap[uid]; toast('Removed from Close Friends'); }
   }catch(e){ toast('Failed: '+sbErr(e)); }
 }
-function setAudience(a){ postAudience=a; $('audAll').classList.toggle('on',a==='public'); $('audClose').classList.toggle('on',a==='close'); }
+function setAudience(a){ postAudience=a; $('audAll').classList.toggle('on',a==='public'); $('audClose').classList.toggle('on',a==='close'); renderAudHint(); }
+/* Posting to everyone is the highest-stakes option, and that hesitation is
+   what stops people posting at all. Offer the smaller audience right at the
+   moment of doubt - but only to people who actually have a close-friends
+   list, otherwise it's a dead end that just adds noise. */
+function renderAudHint(){
+  const el=$('audHint'); if(!el)return;
+  if(postAudience!=='public'||!closeFriendIds.size){ el.innerHTML=''; return; }
+  el.innerHTML=`Not sure about posting to everyone? <b onclick="setAudience('close')">Share with Close Friends instead</b>`;
+}
 
 /* ============ POLLS ============ */
 function seedPoll(p){ if(pollState[p.id])return; const d=p.poll; if(!d)return; pollState[p.id]={q:d.q||'',opts:d.opts||[],counts:(d.opts||[]).map(()=>0),total:0,my:null,voteId:null}; }
