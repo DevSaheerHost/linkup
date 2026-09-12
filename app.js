@@ -374,25 +374,54 @@ async function loadFeed(){
   renderFeedTabs(); loadStories(); loadFeedPosts(true);
 }
 let feedPage=1, feedLoading=false, feedDone=false, feedFollowIds=null, feedToken=0, feedMoreObs=null;
+let feedCursor=null; // {score,created_at,id} keyset cursor for the "For You" ranked feed
 async function loadFeedPosts(reset){
   const box=$('feedPosts'); if(!box)return;
   if(!reset && (feedLoading||feedDone)) return;
-  if(reset){ feedPage=1; feedDone=false; feedFollowIds=null; feedToken++; feedActiveVideo=null; clearTimeout(feedScrollT); box.innerHTML=skFeed(3); }
+  if(reset){ feedPage=1; feedDone=false; feedFollowIds=null; feedCursor=null; feedToken++; feedActiveVideo=null; clearTimeout(feedScrollT); box.innerHTML=skFeed(3); }
   const myTok=feedToken; feedLoading=true;
   try{
-    if(reset && feedMode==='following'){
-      let ids=[];
-      try{ const {data}=await sb.from('follows').select('following_id').eq('follower_id',me().id); ids=(data||[]).map(f=>f.following_id); }catch(e){}
-      ids.push(me().id); feedFollowIds=ids;
+    let posts=[], count=null;
+    if(feedMode==='following'){
+      if(reset){
+        let ids=[];
+        try{ const {data}=await sb.from('follows').select('following_id').eq('follower_id',me().id); ids=(data||[]).map(f=>f.following_id); }catch(e){}
+        ids.push(me().id); feedFollowIds=ids;
+      }
+      if(myTok!==feedToken){feedLoading=false;return;}
+      const from=(feedPage-1)*9, to=feedPage*9-1;
+      let q=sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)',{count:'exact'}).order('created_at',{ascending:false}).range(from,to);
+      if(feedFollowIds) q=q.in('author_id',feedFollowIds);
+      const {data:items,count:c,error}=await q;
+      if(error) throw error;
+      posts=items||[]; count=c;
+    }else{
+      /* "For You": relevance-ranked (author/topic affinity + popularity +
+         recency - see supabase/migrations/20260912000001_feed_ranking.sql
+         for the full formula) instead of plain reverse-chronological.
+         Keyset-paginated since ranked scores can shift between page loads
+         as new engagement comes in, unlike a stable created_at ordering
+         where plain offset paging works fine. */
+      const {data:items,error}=await sb.rpc('get_feed_for_you',{
+        cursor_score: feedCursor&&feedCursor.score,
+        cursor_created_at: feedCursor&&feedCursor.created_at,
+        cursor_id: feedCursor&&feedCursor.id,
+        page_size: 9
+      });
+      if(error) throw error;
+      posts=items||[];
+      if(posts.length){
+        const last=posts[posts.length-1];
+        feedCursor={score:last.score,created_at:last.created_at,id:last.id};
+        const authorIds=[...new Set(posts.map(p=>p.author_id))];
+        const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url').in('id',authorIds);
+        const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
+        posts.forEach(p=>p.author=aMap[p.author_id]);
+      }
+      if(posts.length<9) feedDone=true;
     }
     if(myTok!==feedToken){feedLoading=false;return;}
-    const from=(feedPage-1)*9, to=feedPage*9-1;
-    let q=sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)',{count:'exact'}).order('created_at',{ascending:false}).range(from,to);
-    if(feedFollowIds) q=q.in('author_id',feedFollowIds);
-    const {data:items,count,error}=await q;
-    if(error) throw error;
-    if(myTok!==feedToken){feedLoading=false;return;}
-    const posts=(items||[]).filter(p=>!blockedIds.has(p.author_id));
+    posts=posts.filter(p=>!blockedIds.has(p.author_id));
     if(reset) box.innerHTML='';
     if(feedPage===1 && !posts.length){ box.innerHTML='<div class="empty">'+(feedMode==='following'?'No posts from people you follow yet.':'No posts yet.<br>Create your first post!')+'</div>'; feedDone=true; feedLoading=false; return; }
     if(posts.length){
@@ -412,7 +441,7 @@ async function loadFeedPosts(reset){
       setupViewObs();
     }
     feedPage++;
-    if(!count || feedPage>Math.ceil(count/9)) feedDone=true;
+    if(feedMode==='following'&&(!count || feedPage>Math.ceil(count/9))) feedDone=true;
     armFeedPrefetch();
   }catch(e){ if(reset)box.innerHTML='<div class="empty">Could not load feed.<br>'+esc(sbErr(e))+'</div>'; }
   feedLoading=false;
@@ -749,7 +778,8 @@ function openOtherPostMenu(pid,uid,uname){
 }
 
 /* ================= REELS ================= */
-let reelPage=1, reelLoading=false, reelDone=false, reelTok=0, reelStartId=null, reelBefore='', reelSeek=0;
+let reelPage=1, reelLoading=false, reelDone=false, reelTok=0, reelStartId=null, reelSeek=0;
+let reelCursor=null; // {score,created_at,id} keyset cursor for the ranked reel feed
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
   const st=likeState[p.id]||{count:0,myLikeId:null}; const liked=!!st.myLikeId;
@@ -764,7 +794,7 @@ function openReelAt(pid,t){ reelStartId=pid; reelSeek=t||0; show('Reels'); }
 async function loadReels(reset){
   const box=$('sReels'); if(!box)return;
   if(!reset&&(reelLoading||reelDone))return;
-  if(reset){ reelPage=1; reelDone=false; reelTok++; reelBefore=''; reelActiveVideo=null; clearTimeout(reelScrollT); box.innerHTML=skReel(); }
+  if(reset){ reelPage=1; reelDone=false; reelTok++; reelCursor=null; reelActiveVideo=null; clearTimeout(reelScrollT); box.innerHTML=skReel(); }
   const tok=reelTok; reelLoading=true; let startedId=null;
   try{
     if(reset){
@@ -774,24 +804,42 @@ async function loadReels(reset){
         try{
           const {data:sp}=await sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)').eq('id',want).single();
           if(tok!==reelTok){reelLoading=false;return;}
-          if(sp&&sp.video_url){ await reelPrep([sp]); box.insertAdjacentHTML('beforeend',reelHTML(sp)); reelBefore=sp.created_at; startedId=sp.id; }
+          if(sp&&sp.video_url){ await reelPrep([sp]); box.insertAdjacentHTML('beforeend',reelHTML(sp)); startedId=sp.id; }
         }catch(e){}
       }
     }
-    let q=sb.from('posts').select('*, author:author_id(id,username,name,avatar_url)',{count:'exact'}).not('video_url','is',null).order('created_at',{ascending:false}).range((reelPage-1)*4,reelPage*4-1);
-    if(reelBefore) q=q.lt('created_at',reelBefore);
-    const {data:items,count,error}=await q;
+    /* Relevance-ranked (same author/topic-affinity + popularity + recency
+       formula as the Feed's "For You" tab - see
+       supabase/migrations/20260912000001_feed_ranking.sql), keyset-paginated
+       since ranked scores can shift between page loads. A reel jumped to
+       directly (openReelAt, inserted above) has no score of its own, so
+       subsequent pages just resume from the top of the ranking and dedupe
+       it out if it happens to reappear. */
+    const {data:items,error}=await sb.rpc('get_reels_for_you',{
+      cursor_score: reelCursor&&reelCursor.score,
+      cursor_created_at: reelCursor&&reelCursor.created_at,
+      cursor_id: reelCursor&&reelCursor.id,
+      page_size: 4
+    });
     if(error) throw error;
-    if(tok!==reelTok){reelLoading=false;return;}
-    const posts=(items||[]).filter(p=>!blockedIds.has(p.author_id));
-    if(reelPage===1 && !posts.length && !box.querySelector('.reel')){box.innerHTML='<div class="empty">No reels yet.<br>Post a video to start!</div>';reelDone=true;reelLoading=false;return;}
+    const raw=items||[];
+    let posts=raw.filter(p=>p.id!==startedId&&!blockedIds.has(p.author_id));
+    // Advance the cursor from the raw (unfiltered) results regardless of
+    // whether client-side filtering emptied this batch, so a page that's
+    // entirely blocked/duplicate authors can't stall pagination forever.
+    if(raw.length){ const last=raw[raw.length-1]; reelCursor={score:last.score,created_at:last.created_at,id:last.id}; }
+    if(reelPage===1 && !posts.length && !box.querySelector('.reel') && !raw.length){box.innerHTML='<div class="empty">No reels yet.<br>Post a video to start!</div>';reelDone=true;reelLoading=false;return;}
     if(posts.length){
+      const authorIds=[...new Set(posts.map(p=>p.author_id))];
+      const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url').in('id',authorIds);
+      const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
+      posts.forEach(p=>p.author=aMap[p.author_id]);
       await reelPrep(posts);
       if(tok!==reelTok){reelLoading=false;return;}
       box.insertAdjacentHTML('beforeend',posts.map(reelHTML).join(''));
       setupReelAutoplay();
     }
-    reelPage++; if(!count || reelPage>Math.ceil(count/4))reelDone=true;
+    reelPage++; if(raw.length<4) reelDone=true;
     if(startedId){
       const sv=document.querySelector('#reel_'+startedId+' video');
       if(sv&&reelSeek>0){ sv.dataset.noreset='1'; const ap=()=>{try{sv.currentTime=reelSeek;}catch(_){}}; if(sv.readyState>=1)ap(); else sv.addEventListener('loadedmetadata',ap,{once:true}); }
