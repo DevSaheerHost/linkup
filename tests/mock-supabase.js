@@ -49,15 +49,19 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     const table = url.pathname.replace('/rest/v1/', '').split('?')[0];
     const isSingle = (req.headers()['accept'] || '').includes('vnd.pgrst.object');
 
-    if (table === 'profiles') {
-      return json(route, isSingle ? profile : [profile]);
-    }
+    // A test can override any table (including profiles, e.g. so a batched
+    // .in('id',[...]) lookup returns several users); put the signed-in
+    // user's own profile first there, since .single() takes rows[0].
+    // RPCs land here too, keyed as e.g. "rpc/get_feed_for_you".
     if (tables[table] !== undefined) {
       const rows = tables[table];
       if (req.method() === 'HEAD') {
         return route.fulfill({ status: 200, headers: { 'Content-Range': `0-0/${rows.length}` }, body: '' });
       }
       return json(route, isSingle ? (rows[0] || null) : rows);
+    }
+    if (table === 'profiles') {
+      return json(route, isSingle ? profile : [profile]);
     }
     // Unhandled table: default to empty, so incidental boot-time fetches
     // (notifications, groups, blocks, close friends, etc.) don't error.

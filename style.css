@@ -334,6 +334,13 @@
   .reactrow{display:flex;justify-content:space-between;gap:4px;padding:6px 6px 10px;background:var(--soft);border-radius:14px;margin-bottom:6px}
   .rbtn{background:none;border:none;padding:7px;border-radius:50%;cursor:pointer;color:var(--txt);transition:transform .12s}
   .rbtn:active{transform:scale(1.3)}
+  .rbtn.on{background:var(--card);outline:1.5px solid var(--accent2)}
+  /* post reaction chips sit above the like count, on the feed background
+     rather than a chat bubble, so they need their own surface colour */
+  .prchips{margin:0 0 4px}
+  .prchips .rchip{background:var(--soft)}
+  .sproof{font-size:13px;color:var(--mut);margin-bottom:3px}
+  .sproof b{color:var(--txt);font-weight:600}
   .bub.flash{animation:mflash 1.2s ease}
   @keyframes mflash{0%{box-shadow:0 0 0 3px var(--accent)}100%{box-shadow:0 0 0 0 transparent}}
   .replybar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--soft);border-top:1px solid var(--line)}

@@ -256,7 +256,7 @@ function enterApp(){
   applyStaticIcons();
   $('navAv').outerHTML=avatarHtml(me(),26,'nav-av').replace('class="av','id="navAv" class="av');
   if(!subbed){subscribeRealtime();subscribeCalls();subscribeGroupSig();subscribeGroupCalls();subscribePollVotes();subbed=true;}
-  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends();
+  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends(); loadFollowing();
   show('Feed');
   rearm();
   handleDeepLinkHash();
@@ -361,6 +361,39 @@ const saveState={};   // postId -> saveId|null
 const viewedPosts=new Set();   // session de-dupe for view registration
 let blockedIds=new Set();      // ids I have blocked
 let blockMap={};               // blockedId -> block record id (for unblock)
+let followingIds=new Set();    // ids I follow - drives the "liked by people you follow" line
+let socialProof={};            // postId -> usernames of followers-of-mine who liked it
+async function loadFollowing(){
+  try{
+    const {data,error}=await sb.from('follows').select('following_id').eq('follower_id',me().id);
+    if(error) throw error;
+    followingIds=new Set((data||[]).map(f=>f.following_id));
+  }catch(e){ followingIds=new Set(); }
+}
+/* Social proof: "Liked by someone you actually follow" is a far stronger
+   signal than a raw like count, and it's all already in follows+likes -
+   one batched profile lookup per page for the names. */
+async function loadSocialProof(posts,likes){
+  (posts||[]).forEach(p=>{delete socialProof[p.id];});
+  if(!followingIds.size)return;
+  const byPost={}, need=new Set();
+  (posts||[]).forEach(p=>{
+    const ids=(likes||[]).filter(l=>l.post_id===p.id&&l.user_id!==me().id&&followingIds.has(l.user_id)).map(l=>l.user_id);
+    if(ids.length){ byPost[p.id]=ids; ids.forEach(i=>need.add(i)); }
+  });
+  if(!need.size)return;
+  try{
+    const {data}=await sb.from('profiles').select('id,username').in('id',[...need]);
+    const names={}; (data||[]).forEach(u=>names[u.id]=u.username);
+    Object.keys(byPost).forEach(pid=>{ const l=byPost[pid].map(i=>names[i]).filter(Boolean); if(l.length)socialProof[pid]=l; });
+  }catch(e){}
+}
+function socialProofHtml(pid){
+  const n=socialProof[pid]; if(!n||!n.length)return '';
+  const first=`<b>${esc(n[0])}</b>`;
+  if(n.length===1)return `<div class="sproof">Liked by ${first}</div>`;
+  return `<div class="sproof">Liked by ${first} and ${n.length-1} other${n.length-1===1?'':'s'} you follow</div>`;
+}
 function skBlock(w,h,r,extra){let s='width:'+w+';border-radius:'+(r==null?'8px':r);if(h)s+=';height:'+h;if(extra)s+=';'+extra;return '<div class="sk" style="'+s+'"></div>';}
 function skPost(){return `<div class="post"><div class="phead">${skBlock('34px','34px','50%')}<div style="margin-left:10px">${skBlock('120px','12px')}</div></div>${skBlock('100%','','0','aspect-ratio:1/1')}<div class="pacts">${skBlock('26px','26px','50%')}${skBlock('26px','26px','50%')}${skBlock('26px','26px','50%')}</div><div class="pmeta">${skBlock('100px','12px','6px','margin-bottom:8px')}${skBlock('85%','10px','5px','margin-bottom:6px')}${skBlock('55%','10px','5px')}</div></div>`;}
 function skFeed(n){return Array.from({length:n||3},skPost).join('');}
@@ -437,7 +470,9 @@ async function loadFeedPosts(reset){
       await loadPollVotes(posts);
       if(myTok!==feedToken){feedLoading=false;return;}
       const cByPost={}; comments.forEach(c=>{(cByPost[c.post_id]=cByPost[c.post_id]||[]).push(c);});
-      posts.forEach(p=>{const pl=likes.filter(l=>l.post_id===p.id);likeState[p.id]={count:pl.length,myLikeId:(pl.find(l=>l.user_id===me().id)||{}).id||null}; saveState[p.id]=(saves.find(s=>s.post_id===p.id)||{}).id||null;});
+      posts.forEach(p=>{setLikeState(p.id,likes.filter(l=>l.post_id===p.id)); saveState[p.id]=(saves.find(s=>s.post_id===p.id)||{}).id||null;});
+      await loadSocialProof(posts,likes);
+      if(myTok!==feedToken){feedLoading=false;return;}
       box.insertAdjacentHTML('beforeend',posts.map(p=>renderPost(p,cByPost[p.id]||[])).join(''));
       setupFeedAutoplay();
       setupViewObs();
@@ -514,20 +549,86 @@ function renderPost(p,cmts,full){
       <div style="margin-left:auto;color:var(--mut);font-size:12px">${timeAgo(p.created_at)}</div>
       ${a.id===me().id?`<button class="pmore" onclick="openPostMenu('${p.id}')">${icon('more',20)}</button>`:`<button class="pmore" onclick="openOtherPostMenu('${p.id}','${a.id}','${esc(a.username)}')">${icon('more',20)}</button>`}</div>
     ${p.poll?pollBlock(p):postMedia(p)}
-    <div class="pacts"><span class="like ${liked?'liked':''}" onclick="toggleLike('${p.id}')">${icon('heart',26,{fill:liked?'currentColor':'none'})}</span><span onclick="$('ci_${p.id}').focus()">${icon('comment',26)}</span><span onclick="openShare('${p.id}')">${icon('send',26)}</span><span class="bm ${saved?'saved':''}" id="bm_${p.id}" onclick="toggleSave('${p.id}')">${icon('bookmark',26,{fill:saved?'currentColor':'none'})}</span></div>
-    <div class="pmeta"><div class="likes" id="lc_${p.id}">${st.count} like${st.count===1?'':'s'}</div>${cap}${tagsHtml(p.tags)}<div class="vcount" data-pid="${p.id}"></div></div>
+    <div class="pacts"><span class="like ${liked?'liked':''}" onclick="toggleLike('${p.id}')">${likeBtnHtml(p.id)}</span><span onclick="$('ci_${p.id}').focus()">${icon('comment',26)}</span><span onclick="openShare('${p.id}')">${icon('send',26)}</span><span class="bm ${saved?'saved':''}" id="bm_${p.id}" onclick="toggleSave('${p.id}')">${icon('bookmark',26,{fill:saved?'currentColor':'none'})}</span></div>
+    <div class="pmeta"><div class="rchips prchips" id="rx_${p.id}">${postReactChips(p.id)}</div><div class="likes" id="lc_${p.id}">${st.count} like${st.count===1?'':'s'}</div>${socialProofHtml(p.id)}${cap}${tagsHtml(p.tags)}<div class="vcount" data-pid="${p.id}"></div></div>
     <div class="cmts" id="cl_${p.id}">${more}${shown}</div>
     <div class="cadd"><input id="ci_${p.id}" placeholder="Add a comment…"><button onclick="addComment('${p.id}')">Post</button></div>
   </div>`;
 }
+/* One place that turns raw `likes` rows into the shape the UI reads, so
+   the feed, reels and post-view load paths can't drift apart. A row with
+   no reaction is a plain heart ('love'), which is what every like was
+   before reactions existed. */
+function setLikeState(pid,rows){
+  rows=rows||[];
+  const mine=rows.find(l=>l.user_id===me().id);
+  const counts={};
+  rows.forEach(l=>{const k=l.reaction||'love';counts[k]=(counts[k]||0)+1;});
+  likeState[pid]={count:rows.length,myLikeId:mine?mine.id:null,myReaction:mine?(mine.reaction||'love'):null,counts};
+  return likeState[pid];
+}
+function bumpReact(pid,key,delta){
+  if(!key)return;
+  const st=likeState[pid]; if(!st)return;
+  st.counts=st.counts||{};
+  st.counts[key]=Math.max(0,(st.counts[key]||0)+delta);
+  if(!st.counts[key])delete st.counts[key];
+}
+function likeBtnHtml(pid){
+  const st=likeState[pid]||{};
+  if(st.myLikeId&&st.myReaction&&st.myReaction!=='love')return reactIcon(st.myReaction,26);
+  return icon('heart',26,{fill:st.myLikeId?'currentColor':'none'});
+}
+function postReactChips(pid){
+  const st=likeState[pid]||{}; const counts=st.counts||{};
+  const keys=REACT_ORDER.filter(k=>counts[k]);
+  if(!keys.length)return '';
+  return keys.map(k=>`<span class="rchip ${st.myReaction===k?'mine':''}" onclick="reactPost('${pid}','${k}')">${reactIcon(k,14)}${counts[k]>1?`<i>${counts[k]}</i>`:''}</span>`).join('');
+}
 async function toggleLike(pid){
+  if(likeLPFired){likeLPFired=false;return;}   // the long-press already opened the picker
   const st=likeState[pid]; if(!st)return;
   try{
-    if(st.myLikeId){const id=st.myLikeId;st.myLikeId=null;st.count--;updLike(pid,false);await sb.from('likes').delete().eq('id',id);}
-    else{st.myLikeId='tmp';st.count++;updLike(pid,true);const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
+    if(st.myLikeId){const id=st.myLikeId;bumpReact(pid,st.myReaction,-1);st.myLikeId=null;st.myReaction=null;st.count--;updLike(pid);if(id!=='tmp')await sb.from('likes').delete().eq('id',id);}
+    else{st.myLikeId='tmp';st.myReaction='love';st.count++;bumpReact(pid,'love',1);updLike(pid);const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:'love'}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
   }catch(e){toast('Like failed');loadFeed();}
 }
-function updLike(pid,liked){const el=document.querySelector('#post_'+pid+' .like');if(el){el.innerHTML=icon('heart',26,{fill:liked?'currentColor':'none'});el.classList.toggle('liked',liked);}const lc=$('lc_'+pid);const st=likeState[pid];if(lc)lc.textContent=st.count+' like'+(st.count===1?'':'s');}
+/* Long-press the like button to pick one of the six reactions DMs already
+   use. Replacing an existing reaction is an UPDATE, not delete+insert, so
+   the row keeps its id and created_at (the ranking functions read
+   likes.created_at for recency-weighted affinity). */
+async function reactPost(pid,key){
+  const st=likeState[pid]||setLikeState(pid,[]);
+  const prev={count:st.count,myLikeId:st.myLikeId,myReaction:st.myReaction,counts:{...(st.counts||{})}};
+  try{
+    if(st.myReaction===key){           // tapping your current reaction clears it
+      const id=st.myLikeId;
+      bumpReact(pid,key,-1); st.myLikeId=null; st.myReaction=null; st.count--;
+      updLike(pid);
+      if(id&&id!=='tmp')await sb.from('likes').delete().eq('id',id);
+      return;
+    }
+    if(st.myLikeId){
+      const id=st.myLikeId;
+      bumpReact(pid,st.myReaction,-1); bumpReact(pid,key,1); st.myReaction=key;
+      updLike(pid);
+      if(id!=='tmp')await sb.from('likes').update({reaction:key}).eq('id',id);
+    }else{
+      st.myLikeId='tmp'; st.myReaction=key; st.count++; bumpReact(pid,key,1);
+      updLike(pid);
+      const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:key}).select().single();
+      st.myLikeId=r.id;
+      notify('like',postAuthor[pid],{post_id:pid});
+    }
+  }catch(e){ likeState[pid]=prev; updLike(pid); toast('Reaction failed: '+sbErr(e)); }
+}
+function updLike(pid){
+  const st=likeState[pid]||{count:0,myLikeId:null};
+  const el=document.querySelector('#post_'+pid+' .like');
+  if(el){el.innerHTML=likeBtnHtml(pid);el.classList.toggle('liked',!!st.myLikeId);}
+  const lc=$('lc_'+pid); if(lc)lc.textContent=st.count+' like'+(st.count===1?'':'s');
+  const ch=$('rx_'+pid); if(ch)ch.innerHTML=postReactChips(pid);
+}
 let _tap={id:null,t:0,timer:null};
 function mediaTap(e,pid,kind){
   const tgt=e.currentTarget, now=Date.now();
@@ -543,13 +644,13 @@ function mediaTap(e,pid,kind){
   }
 }
 async function likeOn(pid){
-  const st=likeState[pid]||{count:0,myLikeId:null}; likeState[pid]=st;
+  const st=likeState[pid]||setLikeState(pid,[]); likeState[pid]=st;
   if(st.myLikeId)return;               // already liked: keep it, just show the heart
-  st.myLikeId='tmp'; st.count++;
-  if(document.querySelector('#post_'+pid+' .like'))updLike(pid,true);
+  st.myLikeId='tmp'; st.myReaction='love'; st.count++; bumpReact(pid,'love',1);
+  if(document.querySelector('#post_'+pid+' .like'))updLike(pid);
   const rc=$('rlc_'+pid); if(rc){rc.textContent=st.count;const rb=rc.closest('.ract');if(rb){rb.classList.add('liked');const svg=rb.querySelector('svg');if(svg)svg.setAttribute('fill','currentColor');}}
-  try{ const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id}).select().single(); st.myLikeId=r.id; notify('like',postAuthor[pid],{post_id:pid}); }
-  catch(e){ st.myLikeId=null; st.count=Math.max(0,st.count-1); if(document.querySelector('#post_'+pid+' .like'))updLike(pid,false); if(rc)rc.textContent=st.count; }
+  try{ const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:'love'}).select().single(); st.myLikeId=r.id; notify('like',postAuthor[pid],{post_id:pid}); }
+  catch(e){ st.myLikeId=null; st.myReaction=null; st.count=Math.max(0,st.count-1); bumpReact(pid,'love',-1); if(document.querySelector('#post_'+pid+' .like'))updLike(pid); if(rc)rc.textContent=st.count; }
 }
 function heartBurst(tgt){
   if(!tgt)return; const r=tgt.getBoundingClientRect();
@@ -800,7 +901,7 @@ function reelHTML(p){
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
   let likes=[]; try{const {data}=await sb.from('likes').select('*').in('post_id',pids);likes=data||[];}catch(e){}
-  posts.forEach(p=>{const pl=likes.filter(l=>l.post_id===p.id);likeState[p.id]={count:pl.length,myLikeId:(pl.find(l=>l.user_id===me().id)||{}).id||null};postAuthor[p.id]=(p.author?p.author.id:p.author_id);postVideo[p.id]=true;});
+  posts.forEach(p=>{setLikeState(p.id,likes.filter(l=>l.post_id===p.id));postAuthor[p.id]=(p.author?p.author.id:p.author_id);postVideo[p.id]=true;});
 }
 function openReelAt(pid,t){ reelStartId=pid; reelSeek=t||0; show('Reels'); }
 async function loadReels(reset){
@@ -2055,10 +2156,10 @@ async function regenThumb(pid){
   }catch(e){toast('Failed: '+sbErr(e));}
 }
 async function reelLike(pid,btn){
-  const st=likeState[pid]||{count:0,myLikeId:null};
+  const st=likeState[pid]||setLikeState(pid,[]);
   try{
-    if(st.myLikeId){const id=st.myLikeId;st.myLikeId=null;st.count=Math.max(0,st.count-1);if(id!=='tmp')await sb.from('likes').delete().eq('id',id);}
-    else{st.myLikeId='tmp';st.count++;const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
+    if(st.myLikeId){const id=st.myLikeId;bumpReact(pid,st.myReaction,-1);st.myLikeId=null;st.myReaction=null;st.count=Math.max(0,st.count-1);if(id!=='tmp')await sb.from('likes').delete().eq('id',id);}
+    else{st.myLikeId='tmp';st.myReaction='love';st.count++;bumpReact(pid,'love',1);const {data:r}=await sb.from('likes').insert({post_id:pid,user_id:me().id,reaction:'love'}).select().single();st.myLikeId=r.id;notify('like',postAuthor[pid],{post_id:pid});}
     likeState[pid]=st;
     btn.classList.toggle('liked',!!st.myLikeId);
     const svg=btn.querySelector('svg'); if(svg)svg.setAttribute('fill',st.myLikeId?'currentColor':'none');
@@ -2249,7 +2350,8 @@ async function openPostView(pid){
     if(error) throw error;
     const {data:likes}=await sb.from('likes').select('*').eq('post_id',pid);
     const {data:comments}=await sb.from('comments').select('*, user:user_id(id,username,name,avatar_url)').eq('post_id',pid).order('created_at');
-    likeState[p.id]={count:(likes||[]).length,myLikeId:((likes||[]).find(l=>l.user_id===me().id)||{}).id||null};
+    setLikeState(p.id,likes||[]);
+    await loadSocialProof([p],likes||[]);
     await loadCommentLikes(comments||[]);
     await loadPollVotes([p]);
     try{ const {data:sv}=await sb.from('saves').select('id').eq('post_id',pid).eq('user_id',me().id).maybeSingle(); saveState[pid]=sv?sv.id:null; }catch(e){}
@@ -2261,6 +2363,36 @@ async function openPostView(pid){
 }
 function closePostView(){$('postView').classList.remove('on');}
 $('postViewBack').onclick=closePostView;
+
+/* Long-press the like button for the reaction picker (tap still just
+   hearts it). Delegated from the document so it works for posts rendered
+   later, and pointer events cover touch and mouse in one path. */
+let likeLPTimer=null, likeLPFired=false, likeLPFrom=null;
+document.addEventListener('pointerdown',e=>{
+  const el=e.target.closest('.pacts .like'); if(!el)return;
+  const post=el.closest('.post'); const pid=post&&post.getAttribute('data-pid'); if(!pid)return;
+  likeLPFired=false; likeLPFrom={x:e.clientX,y:e.clientY};
+  clearTimeout(likeLPTimer);
+  likeLPTimer=setTimeout(()=>{ likeLPTimer=null; likeLPFired=true; openPostReact(pid); },450);
+});
+function cancelLikeLP(){ clearTimeout(likeLPTimer); likeLPTimer=null; likeLPFrom=null; }
+['pointerup','pointercancel'].forEach(ev=>document.addEventListener(ev,cancelLikeLP));
+/* Only a real drag cancels the press - a finger never holds perfectly
+   still, and cancelling on any movement at all made the picker almost
+   impossible to open on a touchscreen. */
+document.addEventListener('pointermove',e=>{
+  if(!likeLPTimer||!likeLPFrom)return;
+  if(Math.abs(e.clientX-likeLPFrom.x)>10||Math.abs(e.clientY-likeLPFrom.y)>10)cancelLikeLP();
+});
+function openPostReact(pid){
+  reactPid=pid;
+  const mine=(likeState[pid]||{}).myReaction;
+  $('postReactRow').innerHTML=REACT_ORDER.map(k=>`<button class="rbtn ${mine===k?'on':''}" onclick="closePostReact();reactPost('${pid}','${k}')">${reactIcon(k,26)}</button>`).join('');
+  $('postReactWrap').classList.add('on'); rearm();
+}
+function closePostReact(){ $('postReactWrap').classList.remove('on'); }
+$('postReactCancel').onclick=closePostReact;
+$('postReactWrap').onclick=e=>{ if(e.target.id==='postReactWrap')closePostReact(); };
 /* ============ BACK-BUTTON ROUTER ============ */
 let rootBackT=0;
 function rearm(){ try{history.pushState({linkup:1},'');}catch(e){} }
@@ -2269,6 +2401,7 @@ function topLayerClose(){
   if($('call').classList.contains('on'))return true;
   if($('capWrap').classList.contains('on')){$('capWrap').classList.remove('on');capOnSave=null;return true;}
   if($('insightsWrap').classList.contains('on')){closeInsights();return true;}
+  if($('postReactWrap').classList.contains('on')){closePostReact();return true;}
   if($('postMenuWrap').classList.contains('on')){closePostMenu();return true;}
   if($('msgMenuWrap').classList.contains('on')){closeMsgMenu();return true;}
   if($('actMenuWrap').classList.contains('on')){closeActMenu();return true;}
