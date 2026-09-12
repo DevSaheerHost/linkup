@@ -80,6 +80,44 @@ async function declineCallFromNotification(callId) {
   } catch (_) { /* best effort - caller's own timeout still applies */ }
 }
 
+function conversationNotification(ndata, log) {
+  const isGroup = !!(ndata.reply && ndata.reply.groupId);
+  const title = ndata.title || 'LinkUp';
+  return self.registration.showNotification(title, {
+    body: log.map(m => (m.mine ? 'You: ' : (isGroup ? m.name + ': ' : '')) + m.text).join('\n'),
+    icon: '/icon-192.png', badge: '/badge-96.png',
+    tag: ndata.tag,
+    renotify: false, silent: true,   // echoing your own reply shouldn't buzz
+    actions: [{ action: 'reply', title: 'Reply', type: 'text', placeholder: 'Message ' + title }],
+    data: Object.assign({}, ndata, { log })
+  });
+}
+
+/* Puts the conversation notification back after a reply, with your own
+   message appended, so it stays a LIVE notification you can reply to
+   again.
+
+   This is the whole reason a second inline reply used to vanish: we closed
+   the notification on reply. Android still shows a shell with your sent
+   text in it and still lets you type, but once it's closed there's nothing
+   left for Chrome to dispatch the action to - so the second reply fired no
+   handler, made no request, and reported nothing. */
+async function echoOwnReply(ndata, text) {
+  const log = ((ndata && ndata.log) || []).slice();
+  log.push({ name: 'You', text, mine: true });
+  while (log.length > 6) log.shift();
+  await conversationNotification(ndata, log);
+}
+
+async function replyFailed(ndata, text, conversation) {
+  if (conversation) await idbSet('draft:' + conversation, text);
+  await self.registration.showNotification('Message not sent', {
+    body: 'Open the chat to send: "' + text + '"',
+    icon: '/icon-192.png', badge: '/badge-96.png',
+    data: { url: (ndata && ndata.url) || '/' }
+  });
+}
+
 /* Sends a text reply typed directly into the notification, without ever
    opening the app. Falls back to stashing the text as a draft (picked up by
    restoreDraft() in app.js next time that chat is opened) if there's no
@@ -87,7 +125,10 @@ async function declineCallFromNotification(callId) {
    silently lost. */
 async function sendReplyFromNotification(ndata, text) {
   const reply = ndata && ndata.reply;
-  if (!reply) return;
+  /* No reply target means we can't send and can't even file a draft, but
+     the user still typed something - surfacing that beats discarding it
+     without a word, which is what this used to do. */
+  if (!reply) { await replyFailed(ndata, text, null); return; }
   let session = await idbGet('session').catch(() => null);
   if (session) {
     try {
@@ -98,15 +139,10 @@ async function sendReplyFromNotification(ndata, text) {
         session = await refreshSession(session.refresh_token);
         if (session) res = await insertMessage(session, row);
       }
-      if (res && res.ok) return;
+      if (res && res.ok) { await echoOwnReply(ndata, text); return; }
     } catch (_) { /* fall through to draft */ }
   }
-  await idbSet('draft:' + reply.conversation, text);
-  await self.registration.showNotification('Message not sent', {
-    body: 'Open the chat to send: "' + text + '"',
-    icon: '/icon-192.png', badge: '/badge-96.png',
-    data: { url: ndata.url || '/' }
-  });
+  await replyFailed(ndata, text, reply.conversation);
 }
 
 self.addEventListener('push', event => {
@@ -149,7 +185,7 @@ self.addEventListener('push', event => {
       log.push({ name: data.senderName, text: data.text });
       while (log.length > 6) log.shift();
       const isGroup = !!(data.reply && data.reply.groupId);
-      const body = log.map(m => isGroup ? (m.name + ': ' + m.text) : m.text).join('\n');
+      const body = log.map(m => (m.mine ? 'You: ' : (isGroup ? m.name + ': ' : '')) + m.text).join('\n');
       await self.registration.showNotification(data.title || 'LinkUp', {
         body,
         icon: data.icon || '/icon-192.png',
@@ -157,7 +193,9 @@ self.addEventListener('push', event => {
         tag: data.tag,
         renotify: true,
         actions: [{ action: 'reply', title: 'Reply', type: 'text', placeholder: 'Message ' + (data.title || '') }],
-        data: { url: data.url || '/', type: 'message', log, reply: data.reply }
+        /* title/tag ride along so a reply can rebuild this same
+           notification without a push to copy them from. */
+        data: { url: data.url || '/', type: 'message', title: data.title || 'LinkUp', tag: data.tag, log, reply: data.reply }
       });
       return;
     }
@@ -177,7 +215,9 @@ self.addEventListener('notificationclick', event => {
 
   if (event.action === 'reply') {
     const text = (event.reply || '').trim();
-    event.notification.close();
+    /* Deliberately NOT closing it: the notification has to stay live to
+       accept a second reply (see echoOwnReply). sendReplyFromNotification
+       re-shows it with the same tag, which updates it in place. */
     if (text) event.waitUntil(sendReplyFromNotification(ndata, text));
     return;
   }
