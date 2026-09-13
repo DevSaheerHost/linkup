@@ -154,6 +154,12 @@
   .reelinfo{position:absolute;left:14px;right:70px;bottom:22px;color:#fff;text-shadow:0 1px 5px #000;display:flex;flex-direction:column;gap:6px}
   .reelinfo .rrow{display:flex;align-items:center;gap:10px}
   .reelinfo .nm{font-weight:700;cursor:pointer}
+  /* Follow, offered where you meet someone rather than only on their profile */
+  .followbtn{background:none;border:none;color:var(--accent);font-weight:700;font-size:13px;padding:4px 6px;cursor:pointer;white-space:nowrap}
+  .followbtn.done{color:var(--mut);font-weight:600}
+  /* Over video it needs its own shape to stay legible on any frame */
+  .followbtn.onreel{border:1.5px solid rgba(255,255,255,.9);border-radius:8px;color:#fff;padding:3px 12px;font-size:12.5px;text-shadow:none;backdrop-filter:blur(2px)}
+  .followbtn.onreel.done{border-color:rgba(255,255,255,.45);color:rgba(255,255,255,.75)}
   .rcap{font-size:13px}
   .reelacts{position:absolute;right:12px;bottom:60px;display:flex;flex-direction:column;gap:20px;align-items:center;z-index:3}
   .ract{background:none;border:none;color:#fff;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;filter:drop-shadow(0 1px 3px rgba(0,0,0,.7))}
