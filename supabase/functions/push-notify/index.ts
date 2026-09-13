@@ -29,6 +29,21 @@ const VAPID_PRIVATE = Deno.env.get('VAPID_PRIVATE')!;
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
+// The notification's large icon. Everything that has a face behind it (a
+// message, a call, a like) shows that person's photo; anything without one
+// falls back to the app icon.
+const DEFAULT_ICON = '/icon-192.png';
+const PUBLIC_STORAGE = SUPABASE_URL.replace(/\/+$/, '') + '/storage/v1/object/public/';
+
+/* avatar_url is user-writable text, and whatever lands in `icon` is fetched
+   by the OS itself - unauthenticated, from the recipient's device, on every
+   push. An arbitrary URL there would be a tracking beacon the *sender*
+   controls (recipient IP + when they're online), so only our own public
+   storage is allowed through; anything else quietly becomes the app icon. */
+function safeIcon(url?: string | null) {
+  return typeof url === 'string' && url.startsWith(PUBLIC_STORAGE) ? url : DEFAULT_ICON;
+}
+
 async function logFailure(eventTable: string, eventId: string | null, userId: string | null, message: string) {
   console.error('push-notify failure', eventTable, eventId, message);
   try {
@@ -41,12 +56,12 @@ async function logFailure(eventTable: string, eventId: string | null, userId: st
 
 async function getUser(id: string | null) {
   if (!id) return null;
-  const { data, error } = await sb.from('profiles').select('id,username').eq('id', id).single();
+  const { data, error } = await sb.from('profiles').select('id,username,avatar_url').eq('id', id).single();
   if (error) { await logFailure('profiles', id, null, 'getUser lookup failed: ' + error.message); return null; }
   return data;
 }
 async function getGroup(id: string) {
-  const { data, error } = await sb.from('groups').select('id,name').eq('id', id).single();
+  const { data, error } = await sb.from('groups').select('id,name,avatar_url').eq('id', id).single();
   if (error) { await logFailure('groups', id, null, 'getGroup lookup failed: ' + error.message); return null; }
   return data;
 }
@@ -105,6 +120,7 @@ Deno.serve(async (req) => {
         const actor = await getUser(r.actor_id);
         const msg = messageFor(r, actor?.username) as Record<string, unknown>;
         msg.url = '/';
+        msg.icon = safeIcon(actor?.avatar_url);
         msg.tag = r.type + ':' + (r.post_id || r.actor_id);
         await sendToUser(r.user_id, msg, 'notifications', r.id);
         break;
@@ -125,12 +141,15 @@ Deno.serve(async (req) => {
           const members = await getGroupMemberIds(r.group_id);
           const msg = {
             title: g?.name || 'Group', body: fromName + ': ' + body, type: 'message', url: '/', tag: 'grp:' + r.group_id,
+            // A group shows its own picture; without one, the sender's.
+            icon: safeIcon(g?.avatar_url || from?.avatar_url),
             senderName: fromName, text: body, reply: { groupId: r.group_id, conversation: r.group_id }
           };
           for (const uid of members) if (uid !== r.sender_id) await sendToUser(uid, msg, 'messages', r.id);
         } else if (r.receiver_id && r.receiver_id !== r.sender_id) {
           const msg = {
             title: fromName, body, type: 'message', url: '/', tag: 'msg:' + r.conversation,
+            icon: safeIcon(from?.avatar_url),
             senderName: fromName, text: body, reply: { receiverId: r.sender_id, conversation: r.conversation }
           };
           await sendToUser(r.receiver_id, msg, 'messages', r.id);
@@ -143,6 +162,7 @@ Deno.serve(async (req) => {
         const msg = {
           title: from?.username || 'Incoming call',
           body: r.kind === 'video' ? 'Incoming video call' : 'Incoming voice call',
+          icon: safeIcon(from?.avatar_url),
           type: 'call', kind: r.kind, callId: r.id, url: '/#call=' + r.id, tag: 'call:' + r.id
         };
         await sendToUser(r.callee_id, msg, 'calls', r.id);
@@ -155,6 +175,7 @@ Deno.serve(async (req) => {
         const msg = {
           title: g?.name || 'Group',
           body: r.kind === 'video' ? 'Incoming group video call' : 'Incoming group voice call',
+          icon: safeIcon(g?.avatar_url),
           type: 'call', kind: r.kind, url: '/#gcall=' + r.group_id, tag: 'gcall:' + r.group_id
         };
         for (const uid of members) if (uid !== r.starter_id) await sendToUser(uid, msg, 'groupcalls', r.id);

@@ -69,6 +69,17 @@ async function reply(page, text, ndata) {
   }, [text, ndata]);
 }
 
+// Invokes the push handler the way the browser does for an incoming push.
+async function push(page, data) {
+  return page.evaluate(async (data) => {
+    const waits = [];
+    await window.__handlers.push({ data: { json: () => data }, waitUntil: (p) => waits.push(p) });
+    await Promise.all(waits);
+  }, data);
+}
+
+const AVATAR = 'https://prfdrpmnftegbiaglugh.supabase.co/storage/v1/object/public/avatars/u/a.jpg';
+
 test('two consecutive inline replies both send', async ({ page }) => {
   await loadSw(page);
 
@@ -128,4 +139,40 @@ test('a reply with no target still tells the user instead of discarding it', asy
   const shown = await page.evaluate(() => window.__shown[window.__shown.length - 1]);
   expect(shown.title).toBe('Message not sent');
   expect(shown.opts.body).toContain('orphan');
+});
+
+test("the big icon is the sender's photo, and survives a reply", async ({ page }) => {
+  await loadSw(page);
+  await push(page, {
+    type: 'message', title: 'linkup', tag: 'msg:conv-1', senderName: 'linkup',
+    text: 'Where are you', icon: AVATAR, reply: NDATA.reply,
+  });
+
+  let shown = await page.evaluate(() => window.__shown[window.__shown.length - 1]);
+  expect(shown.opts.icon).toBe(AVATAR);
+
+  // Replying re-shows the notification from its own data, so the photo has
+  // to ride along in there - otherwise it reverts to the app logo mid-chat.
+  await reply(page, 'At home', shown.opts.data);
+  shown = await page.evaluate(() => window.__shown[window.__shown.length - 1]);
+  expect(shown.opts.icon).toBe(AVATAR);
+});
+
+test('a sender with no photo gets the default icon', async ({ page }) => {
+  await loadSw(page);
+  await push(page, { type: 'message', title: 'lukman', tag: 'msg:c2', senderName: 'lukman', text: 'hi' });
+  const shown = await page.evaluate(() => window.__shown[window.__shown.length - 1]);
+  expect(shown.opts.icon).toBe('/icon-192.png');
+});
+
+test('an off-site avatar URL is refused, not fetched by the OS', async ({ page }) => {
+  await loadSw(page);
+  // avatar_url is user-editable text: an attacker-set URL would make every
+  // recipient's device beacon their IP to a host of the sender's choosing.
+  await push(page, {
+    type: 'message', title: 'evil', tag: 'msg:c3', senderName: 'evil', text: 'hi',
+    icon: 'https://tracker.example/pixel.png',
+  });
+  const shown = await page.evaluate(() => window.__shown[window.__shown.length - 1]);
+  expect(shown.opts.icon).toBe('/icon-192.png');
 });
