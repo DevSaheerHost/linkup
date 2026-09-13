@@ -80,12 +80,21 @@ async function declineCallFromNotification(callId) {
   } catch (_) { /* best effort - caller's own timeout still applies */ }
 }
 
+/* Last line of defence before the OS fetches the icon: the payload is
+   VAPID-signed so it can only come from our own server, but the URL inside
+   it originates from a user-editable profile field, so re-check it here
+   too rather than trusting it end-to-end. */
+const DEFAULT_ICON = '/icon-192.png';
+function safeIcon(url) {
+  return typeof url === 'string' && url.startsWith(SUPABASE_URL + '/storage/v1/object/public/') ? url : DEFAULT_ICON;
+}
+
 function conversationNotification(ndata, log) {
   const isGroup = !!(ndata.reply && ndata.reply.groupId);
   const title = ndata.title || 'LinkUp';
   return self.registration.showNotification(title, {
     body: log.map(m => (m.mine ? 'You: ' : (isGroup ? m.name + ': ' : '')) + m.text).join('\n'),
-    icon: '/icon-192.png', badge: '/badge-96.png',
+    icon: safeIcon(ndata.icon), badge: '/badge-96.png',
     tag: ndata.tag,
     renotify: false, silent: true,   // echoing your own reply shouldn't buzz
     actions: [{ action: 'reply', title: 'Reply', type: 'text', placeholder: 'Message ' + title }],
@@ -113,7 +122,7 @@ async function replyFailed(ndata, text, conversation) {
   if (conversation) await idbSet('draft:' + conversation, text);
   await self.registration.showNotification('Message not sent', {
     body: 'Open the chat to send: "' + text + '"',
-    icon: '/icon-192.png', badge: '/badge-96.png',
+    icon: safeIcon(ndata && ndata.icon), badge: '/badge-96.png',
     data: { url: (ndata && ndata.url) || '/' }
   });
 }
@@ -155,7 +164,7 @@ self.addEventListener('push', event => {
       if (await appIsOpen()) return;   // app handles ringing in-foreground
       await self.registration.showNotification(data.title || 'Incoming call', {
         body: data.body || '',
-        icon: data.icon || '/icon-192.png',
+        icon: safeIcon(data.icon),
         /* Android renders the badge as a silhouette: it reads only the alpha
            channel and fills it flat white/black itself, ignoring color - a
            full-color icon there shows up as a solid black square. This must
@@ -188,21 +197,21 @@ self.addEventListener('push', event => {
       const body = log.map(m => (m.mine ? 'You: ' : (isGroup ? m.name + ': ' : '')) + m.text).join('\n');
       await self.registration.showNotification(data.title || 'LinkUp', {
         body,
-        icon: data.icon || '/icon-192.png',
+        icon: safeIcon(data.icon),
         badge: data.badge || '/badge-96.png',
         tag: data.tag,
         renotify: true,
         actions: [{ action: 'reply', title: 'Reply', type: 'text', placeholder: 'Message ' + (data.title || '') }],
         /* title/tag ride along so a reply can rebuild this same
            notification without a push to copy them from. */
-        data: { url: data.url || '/', type: 'message', title: data.title || 'LinkUp', tag: data.tag, log, reply: data.reply }
+        data: { url: data.url || '/', type: 'message', title: data.title || 'LinkUp', tag: data.tag, icon: safeIcon(data.icon), log, reply: data.reply }
       });
       return;
     }
 
     await self.registration.showNotification(data.title || 'LinkUp', {
       body: data.body || '',
-      icon: data.icon || '/icon-192.png',
+      icon: safeIcon(data.icon),
       badge: data.badge || '/badge-96.png',
       tag: data.tag || undefined,
       data: { url: data.url || '/' }
