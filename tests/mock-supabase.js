@@ -53,15 +53,24 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     // .in('id',[...]) lookup returns several users); put the signed-in
     // user's own profile first there, since .single() takes rows[0].
     // RPCs land here too, keyed as e.g. "rpc/get_feed_for_you".
+    /* Honour `?id=eq.<uuid>`: several code paths look a single profile up
+       by id (getUser), and without this every one of them would get
+       whichever row happens to be first. */
+    const idFilter = url.searchParams.get('id');
+    const byId = (rows) => (idFilter && idFilter.startsWith('eq.'))
+      ? rows.filter((r) => r && r.id === idFilter.slice(3))
+      : rows;
+
     if (tables[table] !== undefined) {
-      const rows = tables[table];
+      const rows = byId(tables[table]);
       if (req.method() === 'HEAD') {
         return route.fulfill({ status: 200, headers: { 'Content-Range': `0-0/${rows.length}` }, body: '' });
       }
       return json(route, isSingle ? (rows[0] || null) : rows);
     }
     if (table === 'profiles') {
-      return json(route, isSingle ? profile : [profile]);
+      const rows = byId([profile]);
+      return json(route, isSingle ? (rows[0] || null) : rows);
     }
     // Unhandled table: default to empty, so incidental boot-time fetches
     // (notifications, groups, blocks, close friends, etc.) don't error.

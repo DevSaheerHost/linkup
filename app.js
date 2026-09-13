@@ -53,7 +53,29 @@ async function openProfileByUsername(name){ try{ const {data}=await sb.from('pro
 async function notifyTags(s,postId){ const names=parseTags(s); if(!names.length)return; try{ const {data:us}=await sb.from('profiles').select('id').in('username',names); (us||[]).forEach(u=>{ if(u.id!==me().id) notify('tag',u.id,postId?{post_id:postId}:{}); }); }catch(e){} }
 function mediaUrl(rec,field){ return (rec&&rec[field])||''; }
 function compressImage(file,maxDim,quality){return new Promise(res=>{try{if(!file||!file.type||file.type.indexOf('image/')!==0)return res(file);const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{let w=img.width,h=img.height;if(Math.max(w,h)>maxDim){if(w>=h){h=Math.round(h*maxDim/w);w=maxDim;}else{w=Math.round(w*maxDim/h);h=maxDim;}}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);c.toBlob(b=>{URL.revokeObjectURL(url);res(b?new File([b],(file.name||'img').replace(/\.[^.]+$/,'')+'.jpg',{type:'image/jpeg'}):file);},'image/jpeg',quality||0.82);};img.onerror=()=>{URL.revokeObjectURL(url);res(file);};img.src=url;}catch(e){res(file);}});}
-function avatarHtml(u,size,cls){const url=mediaUrl(u,'avatar_url');if(url)return `<img class="av ${cls||''}" style="width:${size}px;height:${size}px" src="${url}">`;const L=esc((u.username||u.name||'?')[0].toUpperCase());return `<div class="av ph ${cls||''}" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.42)}px">${L}</div>`;}
+/* Every media URL in this file comes from a user-writable column, so it
+   can't be dropped into an attribute raw: a quote inside it closes the
+   attribute and whatever follows is parsed as markup. Escape it, and only
+   let through the schemes an <img>/<audio> should ever load. */
+function safeUrl(u){ const v=String(u||'').trim(); return /^(https?|blob):/i.test(v)?esc(v):''; }
+function avatarHtml(u,size,cls){
+  const L=esc(((((u&&(u.username||u.name))||'?').trim()[0])||'?').toUpperCase());
+  const box=`width:${size}px;height:${size}px`;
+  const url=safeUrl(mediaUrl(u,'avatar_url'));
+  /* A photo that can't load - file deleted, offline, URL gone stale - has
+     to fall back to the same default as having none, or the row shows a
+     broken-image glyph instead of an avatar. */
+  if(url)return `<img class="av ${cls||''}" style="${box}" src="${url}" alt="" data-ph="${L}" onerror="avatarFallback(this)">`;
+  return `<div class="av ph ${cls||''}" style="${box};font-size:${Math.round(size*0.42)}px">${L}</div>`;
+}
+function avatarFallback(img){
+  const d=document.createElement('div');
+  d.className=(img.className+' ph').trim();
+  d.style.cssText=img.style.cssText;
+  d.style.fontSize=Math.round((parseInt(img.style.width,10)||36)*0.42)+'px';
+  d.textContent=img.getAttribute('data-ph')||'?';   // textContent, never HTML
+  img.replaceWith(d);
+}
 function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',2200);}
 function sbErr(e){ try{ return (e&&(e.message||e.error_description||e.msg))||'Unknown error'; }catch(_){ return 'Error'; } }
 function timeAgo(d){const s=(Date.now()-new Date(d).getTime())/1000;if(s<60)return 'now';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';if(s<604800)return Math.floor(s/86400)+'d';return new Date(d).toLocaleDateString();}
@@ -407,7 +429,7 @@ async function renderMissedStrip(){
     const cards=rows.map(p=>{
       const a=aMap[p.author_id]||{username:'user'};
       const thumb=p.thumb_url||p.image_url||(p.photos&&p.photos[0])||'';
-      const art=thumb?`<img loading="lazy" src="${thumb}">`:`<span class="mcfallback">${icon(p.video_url?'reels':'image',22)}</span>`;
+      const art=thumb?`<img loading="lazy" src="${safeUrl(thumb)}">`:`<span class="mcfallback">${icon(p.video_url?'reels':'image',22)}</span>`;
       return `<div class="mcard" onclick="openPostView('${p.id}')">${art}<div class="mcname">${esc(a.username)}${vbadge(a)}</div></div>`;
     }).join('');
     host.innerHTML=`<div class="misshead">You might have missed</div><div class="missrow">${cards}</div>`;
@@ -570,14 +592,14 @@ function applyVideoCrop(video,crop){
 function postMedia(p){
   if(p.video_url){
     const cropAttr=p.video_crop?` data-crop='${esc(JSON.stringify(p.video_crop))}' onloadedmetadata="applyVideoCrop(this,JSON.parse(this.dataset.crop))"`:'';
-    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
+    return `<div class="vidwrap"><video class="pimg feedvid" onclick="mediaTap(event,'${p.id}','feedvid')" src="${safeUrl(p.video_url)}#t=0.1" ${p.thumb_url?`poster="${safeUrl(p.thumb_url)}"`:''} muted loop playsinline preload="metadata" oncanplay="tryAutoplay(this)"${cropAttr}></video><button class="mutebtn" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button></div>`;
   }
   if(Array.isArray(p.photos)&&p.photos.length>1){
-    const slides=p.photos.map(url=>`<img class="cslide blur-load" loading="lazy" decoding="async" src="${url}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
+    const slides=p.photos.map(url=>`<img class="cslide blur-load" loading="lazy" decoding="async" src="${safeUrl(url)}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`).join('');
     const dots=p.photos.map((_,i)=>`<span class="${i===0?'on':''}"></span>`).join('');
     return `<div class="carousel"><div class="cartrack" id="cart_${p.id}" onscroll="carScroll(this,'${p.id}',${p.photos.length})">${slides}</div><div class="ccount" id="ccount_${p.id}">1/${p.photos.length}</div><div class="cdots" id="cdots_${p.id}">${dots}</div></div>`;
   }
-  return `<img class="pimg blur-load" loading="lazy" decoding="async" src="${p.image_url||''}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`;
+  return `<img class="pimg blur-load" loading="lazy" decoding="async" src="${safeUrl(p.image_url)}" onload="this.classList.add('loaded')" onclick="mediaTap(event,'${p.id}','feed')">`;
 }
 let carScrollT={};
 function carScroll(track,pid,n){
@@ -967,7 +989,7 @@ let reelCursor=null; // {score,created_at,id} keyset cursor for the ranked reel 
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
   const st=likeState[p.id]||{count:0,myLikeId:null}; const liked=!!st.myLikeId;
-  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span>${followBtnHtml(a.id,'onreel')}</div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
+  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${safeUrl(p.video_url)}#t=0.1" ${p.thumb_url?`poster="${safeUrl(p.thumb_url)}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span>${followBtnHtml(a.id,'onreel')}</div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
 }
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
@@ -1367,7 +1389,7 @@ function gridCell(p){
   const play=p.video_url?`<span class="gvid">${icon('reels',16)}</span>`:'';
   const multi=(Array.isArray(p.photos)&&p.photos.length>1)?`<span class="gmulti">${icon('layers',16)}</span>`:'';
   const fb=icon(p.video_url?'reels':'image',24);
-  const img=t?`<img class="blur-load" src="${t}" loading="lazy" decoding="async" onload="this.classList.add('loaded')" onerror="this.remove();this.closest('.gcell').classList.add('gph')">`:'';
+  const img=t?`<img class="blur-load" src="${safeUrl(t)}" loading="lazy" decoding="async" onload="this.classList.add('loaded')" onerror="this.remove();this.closest('.gcell').classList.add('gph')">`:'';
   return `<div class="gcell ${t?'':'gph'}" onclick="openPostView('${p.id}')">${img}<span class="gfallback">${fb}</span>${play}${multi}</div>`;
 }
 
@@ -1595,7 +1617,7 @@ async function getGroupMemberIds(gid){
   try{ const {data,error}=await sb.from('group_members').select('user_id').eq('group_id',gid); if(error)throw error; return (data||[]).map(r=>r.user_id); }
   catch(e){ return []; }
 }
-function groupAvatar(g,size){ const url=mediaUrl(g,'avatar_url'); if(url)return `<img class="av" style="width:${size}px;height:${size}px" src="${url}">`; const L=esc(((g.name||'G').trim()[0]||'G').toUpperCase()); return `<div class="av gav" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.42)}px">${L}</div>`; }
+function groupAvatar(g,size){ const url=safeUrl(mediaUrl(g,'avatar_url')); const L=esc(((g.name||'G').trim()[0]||'G').toUpperCase()); if(url)return `<img class="av gav" style="width:${size}px;height:${size}px" src="${url}" alt="" data-ph="${L}" onerror="avatarFallback(this)">`; return `<div class="av gav" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.42)}px">${L}</div>`; }
 /* If a notification reply failed to send in the background (session
    expired, offline), sw.js stashes the text under this key so it isn't
    silently lost - restore it into the input the next time this chat opens. */
@@ -2158,7 +2180,7 @@ function buildStoryView(){
 }
 function showStoryFrame(){
   const s=svList[svIdx]; if(!s)return;
-  $('svImg').innerHTML=`<img class="blur-load" src="${s.image_url}" onload="this.classList.add('loaded')">`;
+  $('svImg').innerHTML=`<img class="blur-load" src="${safeUrl(s.image_url)}" onload="this.classList.add('loaded')">`;
   svList.forEach((_,i)=>{const b=$('sbar_'+i);if(b){b.style.transition='none';b.style.width=i<svIdx?'100%':'0';}});
   const tg=$('svTags'); if(tg)tg.innerHTML=storyTagsLine(s.tags);
   const lf=$('svLeft');
@@ -2659,10 +2681,10 @@ function bubble(m){
   const sender=su?`<div class="bsender">${esc(su.username||su.name||'user')}</div>`:'';
   let reply='';
   if(m.reply_to_id&&m.reply_meta){ const r=parseRx(m.reply_meta); reply=`<div class="rquote" onclick="event.stopPropagation();jumpToMsg('${m.reply_to_id}')"><span class="rqu">${esc(r.u||'')}</span><span class="rqt">${esc(r.t||'')}</span></div>`; }
-  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" src="${m.image_url}" onload="this.classList.add('loaded')" onclick="window.open('${m.image_url}','_blank')">`:'';
+  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" src="${safeUrl(m.image_url)}" onload="this.classList.add('loaded')" onclick="window.open(this.src,'_blank')">`:'';
   const card=m.post_id?`<div class="pcard" data-post="${m.post_id}" data-mid="${m.id}" onclick="openPostView('${m.post_id}')"><span class="pcimg" id="pcimg_${m.id}"></span><span>View post</span></div>`:'';
   const txt=m.text?esc(m.text):'';
-  const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" src="${m.audio_url}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
+  const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" src="${safeUrl(m.audio_url)}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
   const seen=(mine&&!grp)?`<span class="seen ${m.read?'on':''}">${icon(m.read?'checks':'check',14)}</span>`:'';
   return `<div class="bub ${mine?'me':'them'}" id="m_${m.id}">${sender}${reply}${txt}${img}${voice}${card}<div class="btime">${timeAgo(m.created_at)}${seen}</div>${reactionsHtml(m.id,m.reactions)}</div>`;
 }
