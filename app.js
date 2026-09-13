@@ -413,6 +413,38 @@ async function renderMissedStrip(){
     host.innerHTML=`<div class="misshead">You might have missed</div><div class="missrow">${cards}</div>`;
   }catch(e){}
 }
+/* Follow straight from a post or reel. Seeing something from someone you
+   don't follow is the moment you'd want to follow them - making people go
+   to the profile to do it loses most of them. */
+function followBtnHtml(uid,cls){
+  if(!uid||!me()||uid===me().id||followingIds.has(uid))return '';
+  return `<button class="followbtn${cls?' '+cls:''}" data-follow="${uid}" onclick="event.stopPropagation();followFrom('${uid}')">Follow</button>`;
+}
+function setFollowBtns(uid,following){
+  document.querySelectorAll('[data-follow="'+uid+'"]').forEach(b=>{
+    b.textContent=following?'Following':'Follow';
+    b.classList.toggle('done',following);
+    b.disabled=following;
+  });
+}
+async function followFrom(uid){
+  if(!uid||uid===me().id||followingIds.has(uid))return;
+  followingIds.add(uid);
+  setFollowBtns(uid,true);            // optimistic: the tap should feel instant
+  try{
+    /* upsert, not insert: the same author can appear on several posts at
+       once and the local set can lag behind, and (follower,following) is
+       unique - a duplicate here is success, not an error worth showing. */
+    const {error}=await sb.from('follows')
+      .upsert({follower_id:me().id,following_id:uid},{onConflict:'follower_id,following_id',ignoreDuplicates:true});
+    if(error) throw error;
+    notify('follow',uid);
+  }catch(e){
+    followingIds.delete(uid);
+    setFollowBtns(uid,false);
+    toast('Follow failed: '+sbErr(e));
+  }
+}
 function socialProofHtml(pid){
   const n=socialProof[pid]; if(!n||!n.length)return '';
   const first=`<b>${esc(n[0])}</b>`;
@@ -572,6 +604,7 @@ function renderPost(p,cmts,full){
   return `<div class="post" id="post_${p.id}" data-pid="${p.id}">
     <div class="phead">${avatarHtml(a,34)}<div><div class="nm" onclick="openProfile('${a.id}')" style="cursor:pointer">${esc(a.username)}${vbadge(a)}</div>${p.audience==='close'?`<div class="cfbadge">${icon('group',11)} Close Friends</div>`:''}</div>
       <div style="margin-left:auto;color:var(--mut);font-size:12px">${timeAgo(p.created_at)}</div>
+      ${followBtnHtml(a.id)}
       ${a.id===me().id?`<button class="pmore" onclick="openPostMenu('${p.id}')">${icon('more',20)}</button>`:`<button class="pmore" onclick="openOtherPostMenu('${p.id}','${a.id}','${esc(a.username)}')">${icon('more',20)}</button>`}</div>
     ${p.poll?pollBlock(p):postMedia(p)}
     <div class="pacts"><span class="like ${liked?'liked':''}" onclick="toggleLike('${p.id}')">${likeBtnHtml(p.id)}</span><span onclick="$('ci_${p.id}').focus()">${icon('comment',26)}</span><span onclick="openShare('${p.id}')">${icon('send',26)}</span><span class="bm ${saved?'saved':''}" id="bm_${p.id}" onclick="toggleSave('${p.id}')">${icon('bookmark',26,{fill:saved?'currentColor':'none'})}</span></div>
@@ -934,7 +967,7 @@ let reelCursor=null; // {score,created_at,id} keyset cursor for the ranked reel 
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
   const st=likeState[p.id]||{count:0,myLikeId:null}; const liked=!!st.myLikeId;
-  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span></div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
+  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${p.video_url}#t=0.1" ${p.thumb_url?`poster="${p.thumb_url}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span>${followBtnHtml(a.id,'onreel')}</div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
 }
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
@@ -2221,7 +2254,15 @@ async function openSeenList(){
 }
 async function toggleFollow(uid,followId){
   const btn=$('followBtn'); if(btn)btn.disabled=true;
-  try{ if(followId){await sb.from('follows').delete().eq('id',followId);} else {await sb.from('follows').insert({follower_id:me().id,following_id:uid});notify('follow',uid);} loadProfile(uid); }
+  try{
+    if(followId){ await sb.from('follows').delete().eq('id',followId); followingIds.delete(uid); }
+    else { await sb.from('follows').insert({follower_id:me().id,following_id:uid}); followingIds.add(uid); notify('follow',uid); }
+    /* Keep the cached set in step, or the feed would still offer "Follow"
+       for someone you just followed from their profile (and the social
+       proof line would keep ignoring them). */
+    setFollowBtns(uid,followingIds.has(uid));
+    loadProfile(uid);
+  }
   catch(e){ toast('Follow failed: '+sbErr(e)); if(btn)btn.disabled=false; }
 }
 function openPostMenu(pid){pmId=pid;$('pmRegen').style.display=postVideo[pid]?'block':'none';$('postMenuWrap').classList.add('on');rearm();}

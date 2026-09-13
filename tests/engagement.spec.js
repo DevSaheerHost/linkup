@@ -155,3 +155,55 @@ test('"you might have missed" strip renders cards and is skipped on Following', 
   await page.evaluate(() => window.setFeedMode('following'));
   await expect(page.locator('#missedStrip .mcard')).toHaveCount(0);
 });
+
+test('Follow button shows only for non-followed others, on posts and reels', async ({ page }) => {
+  await boot(page);   // I follow FRIEND; the post author AUTHOR I do not follow
+
+  // Post: button present, top-right of the header, for the author I don't follow.
+  const btn = page.locator(`#post_${POST_ID} .phead .followbtn`);
+  await expect(btn).toHaveCount(1, { timeout: 10000 });
+  await expect(btn).toHaveText('Follow');
+
+  const r = await page.evaluate(([me, friend, author]) => ({
+    self: window.followBtnHtml(me),          // never follow yourself
+    alreadyFollowing: window.followBtnHtml(friend),
+    notFollowing: window.followBtnHtml(author),
+    reel: window.followBtnHtml(author, 'onreel'),
+  }), [ME, FRIEND, AUTHOR]);
+  expect(r.self).toBe('');
+  expect(r.alreadyFollowing).toBe('');
+  expect(r.notFollowing).toContain('Follow');
+  expect(r.reel).toContain('onreel');        // reel variant is styled for video
+});
+
+test('tapping Follow updates every visible post by that author at once', async ({ page }) => {
+  await boot(page);
+  const follows = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/rest/v1/follows') && req.method() === 'POST') {
+      follows.push({ body: req.postData(), prefer: req.headers()['prefer'] || '' });
+    }
+  });
+  await expect(page.locator(`#post_${POST_ID} .followbtn`)).toHaveCount(1, { timeout: 10000 });
+
+  // A second post by the same author, as the feed would render on scroll.
+  await page.evaluate((author) => {
+    const extra = document.createElement('div');
+    extra.innerHTML = window.followBtnHtml(author);
+    extra.id = 'secondpost';
+    document.body.appendChild(extra);
+  }, AUTHOR);
+
+  await page.locator(`#post_${POST_ID} .followbtn`).click();
+
+  // Both the real post's button and the second one flip together.
+  await expect(page.locator(`#post_${POST_ID} .followbtn`)).toHaveText('Following');
+  await expect(page.locator('#secondpost .followbtn')).toHaveText('Following');
+  await expect(page.locator(`#post_${POST_ID} .followbtn`)).toBeDisabled();
+
+  // ...and it really was sent, as an upsert that ignores a duplicate rather
+  // than erroring when the local set has lagged behind.
+  await expect.poll(() => follows.length).toBeGreaterThan(0);
+  expect(JSON.parse(follows[0].body).following_id).toBe(AUTHOR);
+  expect(follows[0].prefer).toContain('ignore-duplicates');
+});
