@@ -23,9 +23,9 @@ const me=()=>myProfile;
 const esc=s=>(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const likeEsc=s=>(s||'').replace(/[%_]/g,'\\$&');
 const userCache={};
-async function getUser(id){
+async function getUser(id,fresh){
   if(!id)return null;
-  if(userCache[id])return userCache[id];
+  if(userCache[id]&&!fresh)return userCache[id];
   try{ const {data,error}=await sb.from('profiles').select('*').eq('id',id).single(); if(error)return null; userCache[id]=data; return data; }
   catch(e){ return null; }
 }
@@ -118,6 +118,7 @@ const PATHS={
   plus:'<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.3v7.4M8.3 12h7.4"/>',
   reels:'<rect x="3" y="4" width="18" height="16" rx="4"/><path d="M10.2 8.4l5.2 3.6-5.2 3.6z" fill="currentColor" stroke="none"/>',
   message:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
+  lock:'<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7"/>',
   comment:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
   heart:'<path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1L12 21l8.8-8.4a5 5 0 0 0 0-7z"/>',
   attach:'<path d="M20.5 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.5 1.5 0 0 1-2.2-2.1l7.8-7.8"/>',
@@ -470,17 +471,25 @@ async function renderMissedStrip(){
    to the profile to do it loses most of them. */
 function followBtnHtml(uid,cls){
   if(!uid||!me()||uid===me().id||followingIds.has(uid))return '';
-  return `<button class="followbtn${cls?' '+cls:''}" data-follow="${uid}" onclick="event.stopPropagation();followFrom('${uid}')">Follow</button>`;
+  const asked=requestedIds.has(uid);
+  return `<button class="followbtn${cls?' '+cls:''}${asked?' done':''}" data-follow="${uid}" onclick="event.stopPropagation();followFrom('${uid}')">${asked?'Requested':'Follow'}</button>`;
 }
 function setFollowBtns(uid,following){
+  const asked=requestedIds.has(uid);
   document.querySelectorAll('[data-follow="'+uid+'"]').forEach(b=>{
-    b.textContent=following?'Following':'Follow';
-    b.classList.toggle('done',following);
-    b.disabled=following;
+    b.textContent=following?'Following':(asked?'Requested':'Follow');
+    b.classList.toggle('done',following||asked);
+    b.disabled=following;                 // a sent request can still be withdrawn
   });
 }
 async function followFrom(uid){
   if(!uid||uid===me().id||followingIds.has(uid))return;
+  if(requestedIds.has(uid))return cancelFollowRequest(uid);
+  /* A private account has to be asked, not just followed - the insert
+     policy refuses it outright, so check before writing rather than
+     showing a failure the user can do nothing about. */
+  const u=await getUser(uid);
+  if(u&&u.is_private)return requestFollow(uid);
   followingIds.add(uid);
   setFollowBtns(uid,true);            // optimistic: the tap should feel instant
   try{
@@ -496,6 +505,73 @@ async function followFrom(uid){
     setFollowBtns(uid,false);
     toast('Follow failed: '+sbErr(e));
   }
+}
+/* Requests I've sent that are still waiting on approval. Kept next to
+   followingIds so a button can tell "Follow" from "Requested" without a
+   round trip. */
+const requestedIds=new Set();
+async function loadRequested(){
+  requestedIds.clear();
+  if(!me())return;
+  try{
+    const {data}=await sb.from('follow_requests').select('target_id').eq('requester_id',me().id);
+    (data||[]).forEach(r=>requestedIds.add(r.target_id));
+  }catch(e){}
+}
+/* A private account can only be followed by approval, so asking is a
+   different write and a different button. */
+async function requestFollow(uid){
+  if(!uid||uid===me().id||followingIds.has(uid)||requestedIds.has(uid))return;
+  requestedIds.add(uid); setFollowBtns(uid,false);
+  try{
+    const {error}=await sb.from('follow_requests')
+      .upsert({requester_id:me().id,target_id:uid},{onConflict:'requester_id,target_id',ignoreDuplicates:true});
+    if(error) throw error;
+    notify('followreq',uid);
+    toast('Follow request sent');
+  }catch(e){
+    requestedIds.delete(uid); setFollowBtns(uid,false);
+    toast('Request failed: '+sbErr(e));
+  }
+}
+async function cancelFollowRequest(uid){
+  requestedIds.delete(uid); setFollowBtns(uid,false);
+  try{ await sb.from('follow_requests').delete().eq('requester_id',me().id).eq('target_id',uid); }
+  catch(e){ toast('Could not withdraw: '+sbErr(e)); }
+}
+async function approveFollowRequest(uid){
+  try{
+    const {error}=await sb.rpc('approve_follow_request',{p_requester:uid});
+    if(error) throw error;
+    toast('Request approved');
+    openFollowRequests();
+  }catch(e){ toast('Approve failed: '+sbErr(e)); }
+}
+async function denyFollowRequest(uid){
+  try{
+    const {error}=await sb.from('follow_requests').delete().eq('requester_id',uid).eq('target_id',me().id);
+    if(error) throw error;
+    openFollowRequests();
+  }catch(e){ toast('Could not deny: '+sbErr(e)); }
+}
+async function openFollowRequests(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Follow requests';
+  const body=$('listBody'); body.innerHTML=skRows(5);
+  try{
+    const {data,error}=await sb.from('follow_requests')
+      .select('requester_id,created_at').eq('target_id',me().id).order('created_at',{ascending:false});
+    if(error) throw error;
+    const reqs=data||[];
+    if(!reqs.length){ body.innerHTML='<div class="empty">No pending requests</div>'; return; }
+    const users={};
+    await Promise.all(reqs.map(async r=>{users[r.requester_id]=await getUser(r.requester_id);}));
+    body.innerHTML=reqs.map(r=>{
+      const u=users[r.requester_id]||{username:'someone'};
+      return `<div class="row"><div class="cav" onclick="closeList();openProfile('${r.requester_id}')">${avatarHtml(u,44)}</div>
+        <div class="last" onclick="closeList();openProfile('${r.requester_id}')"><div class="snip"><b>${esc(u.username)}</b> wants to follow you</div></div>
+        <div class="reqbtns"><button class="grad" onclick="approveFollowRequest('${r.requester_id}')">Approve</button><button onclick="denyFollowRequest('${r.requester_id}')">Deny</button></div></div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="empty">Could not load requests</div>'; }
 }
 function socialProofHtml(pid){
   const n=socialProof[pid]; if(!n||!n.length)return '';
@@ -1432,7 +1508,10 @@ async function loadProfile(uid){
   $('main').classList.remove('reels');
   try{
     const isMe=uid===me().id;
-    const u=isMe?me():await getUser(uid);
+    if(isMe)await refreshFollowRequests(); else await loadRequested();
+    /* getUser caches, and is_private may have just been toggled on the
+       profile being opened, so read a fresh row for someone else's page. */
+    const u=isMe?me():await getUser(uid,true);
     if(!u) throw new Error('User not found');
     const {data:postRows}=await sb.from('posts').select('*').eq('author_id',uid).order('created_at',{ascending:false}).limit(60);
     const posts=postRows||[];
@@ -1444,22 +1523,47 @@ async function loadProfile(uid){
       if(!isMe){ const {data:mf}=await sb.from('follows').select('id').eq('follower_id',me().id).eq('following_id',uid).maybeSingle(); followId=mf?mf.id:null; }
     }catch(e){}
     const blocked=!isMe&&blockedIds.has(uid);
-    const grid=blocked?'<div class="empty">You blocked this user</div>':(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts yet</div>');
+    /* A private account shows its header to everyone - name, photo, counts -
+       and nothing else until you're approved. Posts are already withheld by
+       RLS; this is so the page explains itself instead of looking empty. */
+    const locked=!isMe&&!blocked&&u.is_private&&!followId;
+    const grid=blocked?'<div class="empty">You blocked this user</div>'
+      :locked?`<div class="locked">${icon('lock',30)}<div class="lktitle">This account is private</div><div class="lksub">Follow to see their photos and videos.</div></div>`
+      :(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts yet</div>');
     const btns=isMe
-      ?`<button onclick="openEdit()">Edit profile</button><button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
+      ?`<button onclick="openEdit()">Edit profile</button>${u.is_private?`<button onclick="openFollowRequests()">Requests${pendingReqCount?` <b>${pendingReqCount}</b>`:''}</button>`:''}<button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
       :(blocked
         ?`<button class="grad" style="color:#fff" onclick="toggleBlock('${uid}',true)">Unblock</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`
-        :`<button id="followBtn" class="${followId?'':'grad'}" ${followId?'':'style="color:#fff"'} onclick="toggleFollow('${uid}','${followId||''}')">${followId?'Following':'Follow'}</button><button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
+        :`${followMainBtn(uid,u,followId)}<button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
     box.innerHTML=`<div class="prof">
-      <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div onclick="openFollowList('${uid}','followers')" style="cursor:pointer"><b>${followersN}</b><span>followers</span></div><div onclick="openFollowList('${uid}','following')" style="cursor:pointer"><b>${followingN}</b><span>following</span></div></div></div>
+      <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div ${locked?'':`onclick="openFollowList('${uid}','followers')" style="cursor:pointer"`}><b>${followersN}</b><span>followers</span></div><div ${locked?'':`onclick="openFollowList('${uid}','following')" style="cursor:pointer"`}><b>${followingN}</b><span>following</span></div></div></div>
       <div class="pname">${esc(u.name||u.username)}${vbadge(u)}${isMe?openStreakHtml(u):''}</div>
       <div class="mut" style="color:var(--mut);font-size:13px;margin-bottom:6px">@${esc(u.username)}</div>
-      ${(!isMe&&!blocked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
+      ${(!isMe&&!blocked&&!locked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
       <div class="pbio">${esc(u.bio||'')}</div>
       <div class="pbtns">${btns}</div>
     </div>${grid}`;
     if(isMe){const need=posts.filter(p=>p.video_url&&!p.thumb_url);if(need.length)(async()=>{let any=false;for(const p of need){if(await backfillThumb(p))any=true;}if(any&&currentScreen==='Profile')loadProfile(me().id);})();}
   }catch(e){box.innerHTML='<div class="empty">Could not load profile</div>';}
+}
+/* Follow / Following / Requested. A private account you haven't been
+   approved for gets "Request", and tapping again withdraws it. */
+function followMainBtn(uid,u,followId){
+  if(followId)return `<button id="followBtn" onclick="toggleFollow('${uid}','${followId}')">Following</button>`;
+  if(u&&u.is_private){
+    return requestedIds.has(uid)
+      ? `<button id="followBtn" onclick="cancelFollowRequest('${uid}').then(()=>loadProfile('${uid}'))">Requested</button>`
+      : `<button id="followBtn" class="grad" style="color:#fff" onclick="requestFollow('${uid}').then(()=>loadProfile('${uid}'))">Request</button>`;
+  }
+  return `<button id="followBtn" class="grad" style="color:#fff" onclick="toggleFollow('${uid}','')">Follow</button>`;
+}
+let pendingReqCount=0;
+async function refreshFollowRequests(){
+  if(!me())return;
+  try{
+    const {count}=await sb.from('follow_requests').select('requester_id',{count:'exact',head:true}).eq('target_id',me().id);
+    pendingReqCount=count||0;
+  }catch(e){ pendingReqCount=0; }
 }
 function openProfile(uid){loadProfile(uid);}
 function isOnline(u){ return !!(u&&u.last_seen&&(Date.now()-new Date(u.last_seen).getTime())<45000); }
@@ -1471,6 +1575,11 @@ function openEdit(){
     <input type="file" id="editAvFile" accept="image/*" style="display:none">
     <input class="field" id="editName" placeholder="Display name" value="${esc(u.name||'')}">
     <textarea id="editBio" rows="3" placeholder="Bio">${esc(u.bio||'')}</textarea>
+    <label class="togrow" for="editPrivate">
+      <span><b>Private account</b><i>Only people you approve can see your posts and stories.</i></span>
+      <input type="checkbox" id="editPrivate" ${u.is_private?'checked':''}>
+      <span class="tog"></span>
+    </label>
     <button class="btn grad" id="saveProf">Save</button>
     <button class="btn" style="background:var(--soft);margin-top:8px;color:var(--txt)" onclick="openChangePw()">Change password</button>
     <button class="btn" style="background:var(--soft);margin-top:8px;color:var(--txt)" onclick="loadProfile(me().id)">Cancel</button>
@@ -1481,7 +1590,7 @@ function openEdit(){
   $('saveProf').onclick=async()=>{
     $('saveProf').textContent='Saving…';$('saveProf').disabled=true;
     try{
-      const patch={name:$('editName').value.trim(),bio:$('editBio').value.trim()};
+      const patch={name:$('editName').value.trim(),bio:$('editBio').value.trim(),is_private:$('editPrivate').checked};
       if(newAv){ const ca=await compressImage(newAv,512,0.85); patch.avatar_url=await uploadFile('avatars',me().id+'/'+randPath()+'.jpg',ca); }
       const {data,error}=await sb.from('profiles').update(patch).eq('id',me().id).select().single();
       if(error) throw error;
@@ -2536,10 +2645,11 @@ async function openNotif(){
     else{
       const actorIds=[...new Set(items.map(n=>n.actor_id))]; const users={};
       await Promise.all(actorIds.map(async id=>{users[id]=await getUser(id);}));
-      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you'};
+      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you',followreq:'wants to follow you'};
       body.innerHTML=items.map(n=>{
         const u=users[n.actor_id]||{username:'someone'};
-        const openAction=n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
+        const openAction=n.type==='followreq'?'openFollowRequests()'
+          :n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
         /* Digests and recaps come from the official account and read as a
            whole sentence already - prefixing them with "linkup" would be
            wrong, so they render as plain text. */
