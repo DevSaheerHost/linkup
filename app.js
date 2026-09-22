@@ -1685,15 +1685,26 @@ async function backfillThumb(p){
   }catch(e){}
   return false;
 }
-$('shareBtn').onclick=async()=>{
+/* Save draft / Schedule / Share all take the same path: the media is
+   uploaded and a posts row written exactly as before. Only `status` (and
+   publish_at) differ, so nothing about the upload pipeline changes. */
+$('draftBtn').onclick=()=>publishPost('draft');
+$('scheduleBtn').onclick=()=>{
   if(!mediaKind){toast('Choose a photo or video first');return;}
-  $('shareBtn').textContent='Sharing…';$('shareBtn').disabled=true;
+  openScheduleSheet(when=>publishPost('scheduled',when));
+};
+$('shareBtn').onclick=()=>publishPost('published');
+async function publishPost(status,publishAt){
+  if(!mediaKind){toast('Choose a photo or video first');return;}
+  const label={draft:'Saving…',scheduled:'Scheduling…',published:'Sharing…'}[status];
+  $('shareBtn').textContent=label;$('shareBtn').disabled=true;$('draftBtn').disabled=true;$('scheduleBtn').disabled=true;
   try{
     const tagStr=$('postTags').value.trim();
     const folder=me().id+'/'+randPath();
-    const row={author_id:me().id,caption:$('postCap').value.trim(),audience:postAudience==='close'?'close':'public'};
+    const row={author_id:me().id,caption:$('postCap').value.trim(),audience:postAudience==='close'?'close':'public',status};
+    if(status==='scheduled')row.publish_at=publishAt;
     if(tagStr)row.tags=tagStr;
-    showUpload('Posting…'); setUpload(15);
+    showUpload({draft:'Saving draft…',scheduled:'Scheduling…',published:'Posting…'}[status]); setUpload(15);
     if(mediaKind==='image'){
       const blob=await photoCropper.exportBlob(1000,1000,0.85);
       row.image_url=await uploadFile('posts',folder+'/image.jpg',new File([blob],'post.jpg',{type:'image/jpeg'}));
@@ -1717,11 +1728,83 @@ $('shareBtn').onclick=async()=>{
     const {data:rec,error}=await sb.from('posts').insert(row).select().single();
     if(error) throw error;
     setUpload(100); hideUpload();
-    notifyTags(tagStr,rec.id);
-    resetCreate(); $('postCap').value=''; $('postTags').value=''; toast('Posted!'); show('Feed');
+    /* Only a live post should notify the people tagged in it - a draft may
+       never go out, and a scheduled one notifies when it actually does. */
+    if(status==='published')notifyTags(tagStr,rec.id);
+    resetCreate(); $('postCap').value=''; $('postTags').value='';
+    if(status==='published'){ toast('Posted!'); show('Feed'); }
+    else if(status==='draft'){ toast('Saved to drafts'); show('Profile'); }
+    else { toast('Scheduled for '+fmtWhen(publishAt)); show('Profile'); }
   }catch(e){hideUpload();toast('Post failed: '+sbErr(e));}
-  finally{$('shareBtn').disabled=false;$('shareBtn').textContent='Share';}
-};
+  finally{$('shareBtn').disabled=false;$('shareBtn').textContent='Share';$('draftBtn').disabled=false;$('scheduleBtn').disabled=false;}
+}
+/* Datetime-local gives a value with no timezone; it means the user's local
+   clock, which is what new Date() reads it as. */
+function openScheduleSheet(onPick){
+  const min=new Date(Date.now()+5*60000);
+  const pad=n=>String(n).padStart(2,'0');
+  const local=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  $('actMenu').innerHTML=`<div class="schedrow">
+      <label for="schedWhen">Publish at</label>
+      <input type="datetime-local" id="schedWhen" min="${local(min)}" value="${local(new Date(Date.now()+3600000))}">
+    </div>
+    <button class="grad" id="schedGo">Schedule</button>
+    <button onclick="closeActMenu()">Cancel</button>`;
+  $('actMenuWrap').classList.add('on'); rearm();
+  $('schedGo').onclick=()=>{
+    const v=$('schedWhen').value;
+    if(!v){ toast('Pick a time'); return; }
+    const when=new Date(v);
+    if(isNaN(when)||when.getTime()<Date.now()+60000){ toast('Pick a time at least a minute from now'); return; }
+    closeActMenu(); onPick(when.toISOString());
+  };
+}
+/* toLocaleString() spells out the full date and seconds, which overflows
+   the row; month/day + time is all anyone needs here. */
+function fmtWhen(t){
+  try{ return new Date(t).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+  catch(_){ return new Date(t).toLocaleString(); }
+}
+/* ---- drafts & scheduled ---- */
+async function openDrafts(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Drafts & scheduled';
+  const body=$('listBody'); body.innerHTML=skRows(4);
+  try{
+    const {data,error}=await sb.from('posts').select('*')
+      .eq('author_id',me().id).in('status',['draft','scheduled'])
+      .order('created_at',{ascending:false});
+    if(error) throw error;
+    const rows=data||[];
+    if(!rows.length){ body.innerHTML='<div class="empty">Nothing saved for later</div>'; return; }
+    body.innerHTML=rows.map(p=>{
+      const thumb=p.thumb_url||p.image_url||(p.photos&&p.photos[0])||'';
+      const when=p.status==='scheduled'?'Goes out '+fmtWhen(p.publish_at):'Draft';
+      return `<div class="row drow">
+        <div class="dthumb">${thumb?`<img src="${safeUrl(thumb)}" alt="">`:icon(p.video_url?'reels':'image',18)}</div>
+        <div class="last"><div class="nm">${esc(p.caption||'No caption')}</div><div class="snip">${esc(when)}</div></div>
+        <div class="reqbtns">
+          <button class="grad" onclick="publishDraft('${p.id}','${esc(p.tags||'')}')">Post now</button>
+          <button class="danger" onclick="deleteDraft('${p.id}')">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="empty">Could not load drafts</div>'; }
+}
+async function publishDraft(pid,tags){
+  try{
+    const {error}=await sb.from('posts').update({status:'published',publish_at:null,created_at:new Date().toISOString()}).eq('id',pid);
+    if(error) throw error;
+    if(tags)notifyTags(tags,pid);
+    toast('Posted!'); closeList(); show('Feed');
+  }catch(e){ toast('Could not post: '+sbErr(e)); }
+}
+async function deleteDraft(pid){
+  try{
+    const {error}=await sb.from('posts').delete().eq('id',pid);
+    if(error) throw error;
+    toast('Deleted'); openDrafts();
+  }catch(e){ toast('Delete failed: '+sbErr(e)); }
+}
 
 /* ================= SEARCH ================= */
 let searchT=null;
@@ -1781,7 +1864,11 @@ async function loadProfile(uid){
     const u=isMe?me():await getUser(uid,true);
     if(!u) throw new Error('User not found');
     const {data:postRows}=await sb.from('posts').select('*').eq('author_id',uid).order('created_at',{ascending:false}).limit(60);
-    const posts=postRows||[];
+    /* RLS lets an author read their own drafts, which is what makes the
+       drafts list work - but the public grid is only what is live. */
+    const all=postRows||[];
+    const posts=all.filter(p=>!p.status||p.status==='published');
+    const laterN=all.length-posts.length;
     let followersN=0,followingN=0,followId=null;
     try{
       const {count:fr}=await sb.from('follows').select('id',{count:'exact',head:true}).eq('following_id',uid);
@@ -1798,7 +1885,7 @@ async function loadProfile(uid){
       :locked?`<div class="locked">${icon('lock',30)}<div class="lktitle">This account is private</div><div class="lksub">Follow to see their photos and videos.</div></div>`
       :(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts yet</div>');
     const btns=isMe
-      ?`<button onclick="openEdit()">Edit profile</button>${u.is_private?`<button onclick="openFollowRequests()">Requests${pendingReqCount?` <b>${pendingReqCount}</b>`:''}</button>`:''}${iAmModerator?`<button onclick="openReports()">Reports${openReportCount?` <b>${openReportCount}</b>`:''}</button>`:''}<button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
+      ?`<button onclick="openEdit()">Edit profile</button>${u.is_private?`<button onclick="openFollowRequests()">Requests${pendingReqCount?` <b>${pendingReqCount}</b>`:''}</button>`:''}${iAmModerator?`<button onclick="openReports()">Reports${openReportCount?` <b>${openReportCount}</b>`:''}</button>`:''}${laterN?`<button onclick="openDrafts()">Drafts <b>${laterN}</b></button>`:''}<button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
       :(blocked
         ?`<button class="grad" style="color:#fff" onclick="toggleBlock('${uid}',true)">Unblock</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`
         :`${followMainBtn(uid,u,followId)}<button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
