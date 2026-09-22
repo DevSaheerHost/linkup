@@ -33,11 +33,41 @@ function showUpload(msg){ $('upMsg').textContent=msg||'Uploading…'; setUpload(
 function setUpload(p){ p=Math.max(0,Math.min(100,Math.round(p))); $('upFill').style.width=p+'%'; $('upPct').textContent=p+'%'; if(p>=100)$('upMsg').textContent='Processing…'; }
 function hideUpload(){ $('upOverlay').classList.remove('on'); }
 function randPath(){ return (crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2))); }
+/* Buckets carry a MIME allowlist, and a recorder hands us types like
+   "audio/webm;codecs=opus" - the parameter is not part of the type the
+   allowlist matches, so drop it before the upload rather than have a voice
+   note rejected for a codec hint. */
+function baseMime(t){ return String(t||'').split(';')[0].trim().toLowerCase()||'application/octet-stream'; }
+/* `chat` holds private message media, so it has no public URL to hand out -
+   uploads there return the object path and it is signed at render time
+   (chatPath/hydrateChatMedia). */
+const PRIVATE_BUCKETS=new Set(['chat']);
 async function uploadFile(bucket,path,file){
-  const {error}=await sb.storage.from(bucket).upload(path,file,{upsert:true,contentType:(file&&file.type)||'application/octet-stream'});
+  const {error}=await sb.storage.from(bucket).upload(path,file,{upsert:true,contentType:baseMime(file&&file.type)});
   if(error) throw error;
+  if(PRIVATE_BUCKETS.has(bucket)) return path;
   const {data}=sb.storage.from(bucket).getPublicUrl(path);
   return data.publicUrl;
+}
+/* Media stored before the bucket went private kept a full public URL. Accept
+   both shapes so no old message loses its photo. */
+function chatPath(v){ const t=String(v||''); const i=t.indexOf('/object/public/chat/'); return i>=0?t.slice(i+'/object/public/chat/'.length):t; }
+const chatSigned={};
+/* One signed URL per object, batched - a chat with twenty photos should not
+   be twenty round trips. Mirrors hydrateCards()'s fill-in-after-render
+   approach so bubble() stays a synchronous string builder. */
+async function hydrateChatMedia(root){
+  const els=[...(root||document).querySelectorAll('[data-cmedia]:not([data-hy])')];
+  if(!els.length)return;
+  els.forEach(el=>el.setAttribute('data-hy','1'));
+  const paths=[...new Set(els.map(el=>el.getAttribute('data-cmedia')).filter(p=>p&&!chatSigned[p]))];
+  if(paths.length){
+    try{
+      const {data}=await sb.storage.from('chat').createSignedUrls(paths,60*60*4);
+      (data||[]).forEach(r=>{ if(r&&r.signedUrl&&!r.error)chatSigned[r.path]=r.signedUrl; });
+    }catch(e){ /* leave them unset; the alt/placeholder still renders */ }
+  }
+  els.forEach(el=>{ const u=chatSigned[el.getAttribute('data-cmedia')]; if(u)el.setAttribute('src',u); });
 }
 const postRecCache={};
 async function getPost(id){
@@ -1664,7 +1694,7 @@ async function openGroup(gid){
     if(mErr) throw mErr;
     const msgs=(msgRows||[]).filter(m=>!blockedIds.has(m.sender_id));
     body.innerHTML=msgs.length?msgs.map(bubble).join(''):'<div class="empty" style="padding:30px 0">No messages yet. Say hello!</div>';
-    hydrateCards(body); body.scrollTop=body.scrollHeight;
+    hydrateCards(body); hydrateChatMedia(body); body.scrollTop=body.scrollHeight;
     try{ await sb.from('group_reads').upsert({group_id:gid,user_id:me().id,last_read_at:new Date().toISOString()}); }catch(_){}
     refreshUnread();
   }catch(e){ body.innerHTML='<div class="empty">Could not load messages<br><span style="font-size:12px;opacity:.7">'+esc(sbErr(e))+'</span></div>'; }
@@ -2367,6 +2397,11 @@ async function openForward(mid){
     body.innerHTML=(grpRows+userRows)||'<div class="empty">Start a chat or follow people to forward</div>';
   }catch(e){ body.innerHTML='<div class="empty">Could not load</div>'; }
 }
+async function downloadChatMedia(v){
+  const {data,error}=await sb.storage.from('chat').download(chatPath(v));
+  if(error) throw error;
+  return data;
+}
 async function doForwardTo(type,id){
   const mid=forwardMid; closeList(); if(!mid)return;
   let m=msgCache[mid];
@@ -2380,8 +2415,12 @@ async function doForwardTo(type,id){
     if(m.text)row.text=m.text;
     if(m.post_id)row.post_id=m.post_id;
     const folder=(type==='group'?id:convKey(me().id,id))+'/'+randPath();
-    if(m.image_url){ const b=await (await fetch(m.image_url)).blob(); row.image_url=await uploadFile('chat',folder+'.jpg',new File([b],'forward.jpg',{type:b.type||'image/jpeg'})); }
-    if(m.audio_url){ const b=await (await fetch(m.audio_url)).blob(); const ext=(b.type.indexOf('mp4')>=0)?'m4a':'webm'; row.audio_url=await uploadFile('chat',folder+'.'+ext,new File([b],'forward.'+ext,{type:b.type||'audio/webm'})); }
+    /* Re-uploaded into the destination conversation's own folder, so the
+       recipient is covered by the storage policy without widening it. The
+       source object is private now, so it comes back through the storage
+       API rather than a plain fetch of a public URL. */
+    if(m.image_url){ const b=await downloadChatMedia(m.image_url); row.image_url=await uploadFile('chat',folder+'.jpg',new File([b],'forward.jpg',{type:b.type||'image/jpeg'})); }
+    if(m.audio_url){ const b=await downloadChatMedia(m.audio_url); const ext=(b.type.indexOf('mp4')>=0)?'m4a':'webm'; row.audio_url=await uploadFile('chat',folder+'.'+ext,new File([b],'forward.'+ext,{type:b.type||'audio/webm'})); }
     const {error}=await sb.from('messages').insert(row);
     if(error) throw error;
     toast('Forwarded');
@@ -2641,7 +2680,7 @@ async function openChat(uid){
     const {data:msgs,error}=await sb.from('messages').select('*').eq('conversation',key).is('group_id',null).order('created_at');
     if(error) throw error;
     body.innerHTML=(msgs||[]).map(bubble).join('');
-    hydrateCards(body);
+    hydrateCards(body); hydrateChatMedia(body);
     body.scrollTop=body.scrollHeight;
     markRead((msgs||[]).filter(m=>m.receiver_id===me().id&&!m.read));
   }catch(e){body.innerHTML='<div class="empty">Could not load messages</div>';}
@@ -2681,14 +2720,14 @@ function bubble(m){
   const sender=su?`<div class="bsender">${esc(su.username||su.name||'user')}</div>`:'';
   let reply='';
   if(m.reply_to_id&&m.reply_meta){ const r=parseRx(m.reply_meta); reply=`<div class="rquote" onclick="event.stopPropagation();jumpToMsg('${m.reply_to_id}')"><span class="rqu">${esc(r.u||'')}</span><span class="rqt">${esc(r.t||'')}</span></div>`; }
-  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" src="${safeUrl(m.image_url)}" onload="this.classList.add('loaded')" onclick="window.open(this.src,'_blank')">`:'';
+  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" data-cmedia="${esc(chatPath(m.image_url))}" alt="" onload="this.classList.add('loaded')" onclick="if(this.src)window.open(this.src,'_blank')">`:'';
   const card=m.post_id?`<div class="pcard" data-post="${m.post_id}" data-mid="${m.id}" onclick="openPostView('${m.post_id}')"><span class="pcimg" id="pcimg_${m.id}"></span><span>View post</span></div>`:'';
   const txt=m.text?esc(m.text):'';
-  const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" src="${safeUrl(m.audio_url)}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
+  const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" data-cmedia="${esc(chatPath(m.audio_url))}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
   const seen=(mine&&!grp)?`<span class="seen ${m.read?'on':''}">${icon(m.read?'checks':'check',14)}</span>`:'';
   return `<div class="bub ${mine?'me':'them'}" id="m_${m.id}">${sender}${reply}${txt}${img}${voice}${card}<div class="btime">${timeAgo(m.created_at)}${seen}</div>${reactionsHtml(m.id,m.reactions)}</div>`;
 }
-function appendBubble(m){const b=$('chatBody');b.insertAdjacentHTML('beforeend',bubble(m));hydrateCards(b);b.scrollTop=b.scrollHeight;}
+function appendBubble(m){const b=$('chatBody');b.insertAdjacentHTML('beforeend',bubble(m));hydrateCards(b);hydrateChatMedia(b);b.scrollTop=b.scrollHeight;}
 function closeChat(){ if(mediaRec||recStream)cancelRec(); cleanupPresence(); cancelReply(); closeChatSearch(); $('chat').style.display='none'; chatUser=null; chatGroup=null; clearChatImg(); if(currentScreen==='Chats')loadChats(); }
 let csMatches=[], csIdx=-1;
 function toggleChatSearch(){ const bar=$('chatSearchBar'); if(bar.style.display==='flex'){ closeChatSearch(); } else { bar.style.display='flex'; rearm(); const i=$('chatSearchMsg'); i.value=''; $('csCount').textContent=''; setTimeout(()=>i.focus(),30); } }

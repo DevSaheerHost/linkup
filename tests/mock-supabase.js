@@ -78,6 +78,14 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     return json(route, isSingle ? null : []);
   });
 
+  /* Private-bucket media is fetched through a signed URL, so the storage
+     sign endpoint has to answer for chat photos/voice notes to render. */
+  await page.route(`${PROJECT_URL}/storage/v1/object/sign/**`, async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    const paths = body.paths || (body.path ? [body.path] : []);
+    return json(route, paths.map((p) => ({ path: p, signedURL: `/storage/v1/object/sign/chat/${p}?token=test`, error: null })));
+  });
+
   await page.route(`${PROJECT_URL}/auth/v1/**`, (route) => json(route, { user: session.user }));
 
   // Let realtime attempts fail fast instead of hanging the page.
