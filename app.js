@@ -309,7 +309,7 @@ function enterApp(){
   applyStaticIcons();
   $('navAv').outerHTML=avatarHtml(me(),26,'nav-av').replace('class="av','id="navAv" class="av');
   if(!subbed){subscribeRealtime();subscribeCalls();subscribeGroupSig();subscribeGroupCalls();subscribePollVotes();subbed=true;}
-  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends(); loadFollowing(); touchOpenStreak();
+  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadMutes(); loadCloseFriends(); loadFollowing(); loadRequested(); touchOpenStreak();
   show('Feed');
   rearm();
   handleDeepLinkHash();
@@ -414,6 +414,10 @@ const likeState={};   // postId -> {count, myLikeId|null}
 const saveState={};   // postId -> saveId|null
 const viewedPosts=new Set();   // session de-dupe for view registration
 let blockedIds=new Set();      // ids I have blocked
+/* Muted, which is not the same thing: their posts and stories stop being
+   served to me, they are not told, and nothing is hidden from them. Held
+   as two sets because posts and stories can be muted independently. */
+let mutedPostIds=new Set(), mutedStoryIds=new Set();
 let blockMap={};               // blockedId -> block record id (for unblock)
 let followingIds=new Set();    // ids I follow - drives the "liked by people you follow" line
 let socialProof={};            // postId -> usernames of followers-of-mine who liked it
@@ -641,7 +645,7 @@ async function loadFeedPosts(reset){
       if(posts.length<9) feedDone=true;
     }
     if(myTok!==feedToken){feedLoading=false;return;}
-    posts=posts.filter(p=>!blockedIds.has(p.author_id));
+    posts=posts.filter(p=>!blockedIds.has(p.author_id)&&!mutedPostIds.has(p.author_id));
     if(reset) box.innerHTML='';
     if(feedPage===1 && !posts.length){ box.innerHTML='<div class="empty">'+(feedMode==='following'?'No posts from people you follow yet.':'No posts yet.<br>Create your first post!')+'</div>'; feedDone=true; feedLoading=false; return; }
     if(posts.length){
@@ -1037,6 +1041,39 @@ async function loadBlocks(){
     (rows||[]).forEach(r=>{ blockedIds.add(r.blocked_id); blockMap[r.blocked_id]=r.id; });
   }catch(e){ console.warn('blocks read failed:',sbErr(e)); }
 }
+async function loadMutes(){
+  mutedPostIds=new Set(); mutedStoryIds=new Set();
+  if(!me())return;
+  try{
+    const {data,error}=await sb.from('mutes').select('muted_id,mute_posts,mute_stories').eq('muter_id',me().id);
+    if(error) throw error;
+    (data||[]).forEach(r=>{ if(r.mute_posts)mutedPostIds.add(r.muted_id); if(r.mute_stories)mutedStoryIds.add(r.muted_id); });
+  }catch(e){ console.warn('mutes read failed:',sbErr(e)); }
+}
+/* Named apart from toggleMute(), which mutes a *conversation's*
+   notifications and is a different feature entirely. */
+function isUserMuted(uid){ return mutedPostIds.has(uid)||mutedStoryIds.has(uid); }
+async function toggleMuteUser(uid){
+  if(!uid||uid===me().id)return;
+  const was=isUserMuted(uid);
+  try{
+    if(was){
+      const {error}=await sb.from('mutes').delete().eq('muter_id',me().id).eq('muted_id',uid);
+      if(error) throw error;
+      mutedPostIds.delete(uid); mutedStoryIds.delete(uid);
+      toast('Unmuted');
+    }else{
+      const {error}=await sb.from('mutes').upsert({muter_id:me().id,muted_id:uid,mute_posts:true,mute_stories:true},{onConflict:'muter_id,muted_id'});
+      if(error) throw error;
+      mutedPostIds.add(uid); mutedStoryIds.add(uid);
+      /* Deliberately quiet about what it does to them, because it does
+         nothing to them - that is the whole appeal over blocking. */
+      toast('Muted. They won\u2019t be told.');
+    }
+    if(currentScreen==='Feed')loadFeedPosts(true);
+    else if(currentScreen==='Profile')loadProfile(uid);
+  }catch(e){ toast('Mute failed: '+sbErr(e)); }
+}
 async function blockUser(uid){
   try{ const {data:r}=await sb.from('blocks').insert({blocker_id:me().id,blocked_id:uid}).select().single(); blockedIds.add(uid); blockMap[uid]=r.id; toast('User blocked'); }
   catch(e){ toast('Block failed: '+sbErr(e)); }
@@ -1062,9 +1099,10 @@ function reportTarget(kind,target){
 function closeActMenu(){ $('actMenuWrap').classList.remove('on'); }
 $('actMenuWrap').onclick=e=>{ if(e.target.id==='actMenuWrap')closeActMenu(); };
 function openUserMenu(uid){
-  const blocked=blockedIds.has(uid); const cf=closeFriendIds.has(uid);
+  const blocked=blockedIds.has(uid); const cf=closeFriendIds.has(uid); const muted=isUserMuted(uid);
   $('actMenu').innerHTML=
     `<button onclick="closeActMenu();toggleCloseFriend('${uid}')">${cf?'Remove from Close Friends':'Add to Close Friends'}</button>`+
+    `<button onclick="closeActMenu();toggleMuteUser('${uid}')">${muted?'Unmute user':'Mute user'}</button>`+
     `<button onclick="closeActMenu();reportTarget('user','${uid}')">Report user</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',true)">${blocked?'Unblock user':'Block user'}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
@@ -1074,6 +1112,7 @@ function openOtherPostMenu(pid,uid,uname){
   const blocked=blockedIds.has(uid);
   $('actMenu').innerHTML=
     `<button onclick="closeActMenu();notInterested('${pid}')">Not interested</button>`+
+    `<button onclick="closeActMenu();toggleMuteUser('${uid}')">${isUserMuted(uid)?'Unmute @'+esc(uname):'Mute @'+esc(uname)}</button>`+
     `<button onclick="closeActMenu();reportTarget('post','${pid}')">Report post</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',false)">${blocked?'Unblock @'+esc(uname):'Block @'+esc(uname)}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
@@ -2236,7 +2275,7 @@ async function loadStories(){
     const {data:items,error}=await sb.from('stories').select('*').gte('created_at',since).order('created_at');
     if(error) throw error;
     storyGroups={}; const order=[];
-    (items||[]).forEach(s=>{ if(!storyGroups[s.author_id]){storyGroups[s.author_id]=[]; if(s.author_id!==me().id)order.push(s.author_id);} storyGroups[s.author_id].push(s); });
+    (items||[]).forEach(s=>{ if(s.author_id!==me().id&&(blockedIds.has(s.author_id)||mutedStoryIds.has(s.author_id)))return; if(!storyGroups[s.author_id]){storyGroups[s.author_id]=[]; if(s.author_id!==me().id)order.push(s.author_id);} storyGroups[s.author_id].push(s); });
     let seenSet=new Set();
     try{ const {data:sv}=await sb.from('story_views').select('story_id').eq('viewer_id',me().id); (sv||[]).forEach(v=>seenSet.add(v.story_id)); }catch(e){}
     const users={};
