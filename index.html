@@ -8,6 +8,19 @@
 <!-- PWA -->
 <link rel="manifest" href="/manifest.webmanifest?v=2">
 <meta name="theme-color" content="#7c5cff">
+<script>
+/* Applied before the stylesheet paints, so a light-theme user never sees a
+   frame of dark on every launch. Kept inline and tiny for that reason -
+   app.js loads at the end of <body>, which is far too late. "system"
+   is resolved here rather than in CSS so the palette lives in one place. */
+(function(){
+  try{
+    var pref=localStorage.getItem('linkup_theme')||'system';
+    var dark=pref==='dark'||(pref==='system'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches===false);
+    document.documentElement.setAttribute('data-theme',dark?'dark':'light');
+  }catch(e){ document.documentElement.setAttribute('data-theme','dark'); }
+})();
+</script>
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
@@ -32,7 +45,7 @@
 <meta name="twitter:title" content="LinkUp">
 <meta name="twitter:description" content="Share moments, chat, and call your friends on LinkUp.">
 <meta name="twitter:image" content="https://debian.taile6f55d.ts.net/og.png">
-<link rel="stylesheet" href="style.css?v=18">
+<link rel="stylesheet" href="style.css?v=19">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -231,6 +244,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=39"></script>
+<script src="app.js?v=40"></script>
 </body>
 </html>

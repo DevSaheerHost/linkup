@@ -1,4 +1,34 @@
-  :root{--bg:#0d0d12;--card:#16161f;--soft:#1f1f2b;--line:#2a2a38;--txt:#f2f2f5;--mut:#8b8b9a;--accent:#7c5cff;--accent2:#ff4d8d}
+  /* Dark is the default and stays the exact palette it always was. The
+     light values below are the only thing a theme switch changes - every
+     surface in this file already reads from these tokens, so nothing needs
+     a second rule.
+
+     --onsurf / --onsurf2 are the contrast layers used *inside* a surface
+     (a card inside a chat bubble, a voice-note track). They were hardcoded
+     white-with-alpha, which is invisible once the surface underneath is
+     light, so they have to flip with the theme. Overlays that sit on photos
+     or video stay white in both themes - the media under them is not
+     themed. */
+  :root{
+    --bg:#0d0d12;--card:#16161f;--soft:#1f1f2b;--line:#2a2a38;
+    --txt:#f2f2f5;--mut:#8b8b9a;--accent:#7c5cff;--accent2:#ff4d8d;
+    --shimmer:#20202c;--skgleam:rgba(255,255,255,.07);
+    --onsurf:rgba(255,255,255,.10);--onsurf2:rgba(255,255,255,.28);
+    --authbg1:#22142f;--authbg2:#0d0d12;
+    color-scheme:dark;
+  }
+  :root[data-theme="light"]{
+    --bg:#ffffff;--card:#ffffff;--soft:#f1f1f6;--line:#e4e4ec;
+    --txt:#15151c;--mut:#6b6b7b;--accent:#6a45ff;--accent2:#ec2e73;
+    --shimmer:#e7e7ef;--skgleam:rgba(0,0,0,.05);
+    --onsurf:rgba(0,0,0,.06);--onsurf2:rgba(0,0,0,.20);
+    --authbg1:#ece5ff;--authbg2:#ffffff;
+    color-scheme:light;
+  }
+  /* The app is one full-height surface with its own header and nav, so in
+     light mode the two need a line between them and the page. */
+  :root[data-theme="light"] header,
+  :root[data-theme="light"] nav{background:#fafafd}
   *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{background:var(--bg);color:var(--txt);font-family:-apple-system,'Segoe UI',Roboto,sans-serif;overflow:hidden}
   img{display:block}
@@ -9,7 +39,7 @@
   input,textarea{font-family:inherit}
 
   /* ---------- AUTH ---------- */
-  #auth{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(circle at 50% 25%,#22142f,#0d0d12)}
+  #auth{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(circle at 50% 25%,var(--authbg1),var(--authbg2))}
   .authcard{width:100%;max-width:360px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 22px;text-align:center}
   .logo{font-size:30px;font-weight:800;letter-spacing:-1px;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px}
   .sub{color:var(--mut);font-size:13px;margin-bottom:20px}
@@ -111,7 +141,7 @@
   .pbtns button.grad{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent;color:#fff}
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px}
   .grid img{width:100%;aspect-ratio:1/1;object-fit:cover}
-  .gcell{position:relative;aspect-ratio:1/1;background:var(--soft);overflow:hidden;cursor:pointer;background-image:linear-gradient(100deg,var(--soft) 30%,#20202c 50%,var(--soft) 70%);background-size:200% 100%;animation:shim 1.4s linear infinite}
+  .gcell{position:relative;aspect-ratio:1/1;background:var(--soft);overflow:hidden;cursor:pointer;background-image:linear-gradient(100deg,var(--soft) 30%,var(--shimmer) 50%,var(--soft) 70%);background-size:200% 100%;animation:shim 1.4s linear infinite}
   @keyframes shim{0%{background-position:200% 0}100%{background-position:-200% 0}}
   .gcell img{width:100%;height:100%;object-fit:cover;display:block;aspect-ratio:auto}
   .gcell .gfallback{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:var(--mut)}
@@ -152,7 +182,7 @@
   #toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#000;color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;z-index:99;display:none;border:1px solid var(--line)}
   .spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:r 1s linear infinite;margin:40px auto}
   .sk{position:relative;overflow:hidden;background:var(--soft);border-radius:8px}
-  .sk::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.07),transparent);animation:skshim 1.25s infinite}
+  .sk::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,var(--skgleam),transparent);animation:skshim 1.25s infinite}
   @keyframes skshim{100%{transform:translateX(100%)}}
   @keyframes r{to{transform:rotate(360deg)}}
   /* crop + reels */
@@ -174,7 +204,7 @@
   .ract{background:none;border:none;color:#fff;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;filter:drop-shadow(0 1px 3px rgba(0,0,0,.7))}
   .ract .rc{font-size:12px;font-weight:600}
   .ract.liked{color:#ff4d6a}
-  .pcard{display:inline-flex;align-items:center;gap:8px;margin-top:6px;padding:7px 10px;border-radius:12px;background:rgba(255,255,255,.1);border:1px solid var(--line);cursor:pointer;font-size:13px}
+  .pcard{display:inline-flex;align-items:center;gap:8px;margin-top:6px;padding:7px 10px;border-radius:12px;background:var(--onsurf);border:1px solid var(--line);cursor:pointer;font-size:13px}
   .bub.me .pcard{background:rgba(255,255,255,.2)}
   .pcimg{width:40px;height:40px;border-radius:8px;background:var(--soft) center/cover;flex:none}
   .tagm{color:var(--accent);cursor:pointer;font-weight:600}
@@ -279,7 +309,7 @@
   .reccancel{background:none;border:none;color:var(--mut);cursor:pointer;display:flex;padding:4px}
   .voice{display:flex;align-items:center;gap:9px;min-width:185px;max-width:240px}
   .vplay{background:none;border:none;color:currentColor;cursor:pointer;flex:none;display:flex;padding:0}
-  .vbar{flex:1;height:4px;border-radius:3px;background:rgba(255,255,255,.28);position:relative;cursor:pointer}
+  .vbar{flex:1;height:4px;border-radius:3px;background:var(--onsurf2);position:relative;cursor:pointer}
   .bub.me .vbar{background:rgba(255,255,255,.4)}
   .vfill{position:absolute;left:0;top:0;height:100%;width:0;border-radius:3px;background:currentColor}
   .vtime{font-size:11px;opacity:.85;flex:none;font-variant-numeric:tabular-nums}
@@ -341,7 +371,7 @@
   .slabel{padding:12px 14px 6px;font-weight:700;color:var(--mut);font-size:13px}
   /* replies, reactions, saves, views */
   .rquote{border-left:3px solid rgba(255,255,255,.55);padding:3px 8px;margin:0 0 5px;background:rgba(0,0,0,.18);border-radius:7px;font-size:12px;display:flex;flex-direction:column;cursor:pointer}
-  .bub.them .rquote{border-left-color:var(--accent2);background:rgba(255,255,255,.06)}
+  .bub.them .rquote{border-left-color:var(--accent2);background:var(--onsurf)}
   .rqu{font-weight:600;font-size:11px;opacity:.95}
   .rqt{opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px}
   .rchips{display:flex;gap:4px;margin-top:5px;flex-wrap:wrap}
@@ -542,3 +572,11 @@
           display:flex;align-items:center;justify-content:center;color:var(--mut)}
   .dthumb img{width:100%;height:100%;object-fit:cover}
   .drow .last .nm{font-weight:500;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ---- theme picker (Edit profile) ---- */
+  .themerow{display:flex;gap:7px;background:var(--soft);border:1px solid var(--line);
+            border-radius:12px;padding:6px;margin-bottom:10px}
+  .themebtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:9px 4px;
+            border-radius:9px;background:none;color:var(--mut);font-size:12px;font-weight:600}
+  .themebtn.on{background:var(--card);color:var(--txt);box-shadow:0 1px 3px rgba(0,0,0,.18)}
+  :root[data-theme="light"] .themebtn.on{background:#fff;border:1px solid var(--line);padding:8px 3px}
