@@ -23,9 +23,9 @@ const me=()=>myProfile;
 const esc=s=>(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const likeEsc=s=>(s||'').replace(/[%_]/g,'\\$&');
 const userCache={};
-async function getUser(id){
+async function getUser(id,fresh){
   if(!id)return null;
-  if(userCache[id])return userCache[id];
+  if(userCache[id]&&!fresh)return userCache[id];
   try{ const {data,error}=await sb.from('profiles').select('*').eq('id',id).single(); if(error)return null; userCache[id]=data; return data; }
   catch(e){ return null; }
 }
@@ -33,11 +33,41 @@ function showUpload(msg){ $('upMsg').textContent=msg||'Uploading…'; setUpload(
 function setUpload(p){ p=Math.max(0,Math.min(100,Math.round(p))); $('upFill').style.width=p+'%'; $('upPct').textContent=p+'%'; if(p>=100)$('upMsg').textContent='Processing…'; }
 function hideUpload(){ $('upOverlay').classList.remove('on'); }
 function randPath(){ return (crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2))); }
+/* Buckets carry a MIME allowlist, and a recorder hands us types like
+   "audio/webm;codecs=opus" - the parameter is not part of the type the
+   allowlist matches, so drop it before the upload rather than have a voice
+   note rejected for a codec hint. */
+function baseMime(t){ return String(t||'').split(';')[0].trim().toLowerCase()||'application/octet-stream'; }
+/* `chat` holds private message media, so it has no public URL to hand out -
+   uploads there return the object path and it is signed at render time
+   (chatPath/hydrateChatMedia). */
+const PRIVATE_BUCKETS=new Set(['chat']);
 async function uploadFile(bucket,path,file){
-  const {error}=await sb.storage.from(bucket).upload(path,file,{upsert:true,contentType:(file&&file.type)||'application/octet-stream'});
+  const {error}=await sb.storage.from(bucket).upload(path,file,{upsert:true,contentType:baseMime(file&&file.type)});
   if(error) throw error;
+  if(PRIVATE_BUCKETS.has(bucket)) return path;
   const {data}=sb.storage.from(bucket).getPublicUrl(path);
   return data.publicUrl;
+}
+/* Media stored before the bucket went private kept a full public URL. Accept
+   both shapes so no old message loses its photo. */
+function chatPath(v){ const t=String(v||''); const i=t.indexOf('/object/public/chat/'); return i>=0?t.slice(i+'/object/public/chat/'.length):t; }
+const chatSigned={};
+/* One signed URL per object, batched - a chat with twenty photos should not
+   be twenty round trips. Mirrors hydrateCards()'s fill-in-after-render
+   approach so bubble() stays a synchronous string builder. */
+async function hydrateChatMedia(root){
+  const els=[...(root||document).querySelectorAll('[data-cmedia]:not([data-hy])')];
+  if(!els.length)return;
+  els.forEach(el=>el.setAttribute('data-hy','1'));
+  const paths=[...new Set(els.map(el=>el.getAttribute('data-cmedia')).filter(p=>p&&!chatSigned[p]))];
+  if(paths.length){
+    try{
+      const {data}=await sb.storage.from('chat').createSignedUrls(paths,60*60*4);
+      (data||[]).forEach(r=>{ if(r&&r.signedUrl&&!r.error)chatSigned[r.path]=r.signedUrl; });
+    }catch(e){ /* leave them unset; the alt/placeholder still renders */ }
+  }
+  els.forEach(el=>{ const u=chatSigned[el.getAttribute('data-cmedia')]; if(u)el.setAttribute('src',u); });
 }
 const postRecCache={};
 async function getPost(id){
@@ -88,6 +118,7 @@ const PATHS={
   plus:'<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.3v7.4M8.3 12h7.4"/>',
   reels:'<rect x="3" y="4" width="18" height="16" rx="4"/><path d="M10.2 8.4l5.2 3.6-5.2 3.6z" fill="currentColor" stroke="none"/>',
   message:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
+  lock:'<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7"/>',
   comment:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
   heart:'<path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1L12 21l8.8-8.4a5 5 0 0 0 0-7z"/>',
   attach:'<path d="M20.5 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.5 1.5 0 0 1-2.2-2.1l7.8-7.8"/>',
@@ -278,10 +309,34 @@ function enterApp(){
   applyStaticIcons();
   $('navAv').outerHTML=avatarHtml(me(),26,'nav-av').replace('class="av','id="navAv" class="av');
   if(!subbed){subscribeRealtime();subscribeCalls();subscribeGroupSig();subscribeGroupCalls();subscribePollVotes();subbed=true;}
-  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadCloseFriends(); loadFollowing(); touchOpenStreak();
+  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadMutes(); loadCloseFriends(); loadFollowing(); loadRequested(); refreshModeration(); touchOpenStreak();
   show('Feed');
   rearm();
   handleDeepLinkHash();
+}
+/* A shared profile link lands a stranger on a bare login box with no idea
+   who sent them or what this is. The hash survives sign-up untouched, so
+   handleDeepLinkHash() still opens the right profile afterwards - this is
+   only about giving them a reason to get that far.
+
+   The inviter is read through invite_preview(), a narrow definer RPC: the
+   profiles table is authenticated-only and should stay that way, so the
+   public surface here is exactly the four fields a profile card shows, for
+   a username the visitor already has. */
+async function showInviteContext(){
+  const box=$('invitedBy'); if(!box)return;
+  box.innerHTML='';
+  const m=(location.hash||'').match(/[#&]u=([^&]+)/);
+  if(!m)return;
+  let name;
+  try{ name=decodeURIComponent(m[1]); }catch(_){ return; }
+  try{
+    const {data,error}=await sb.rpc('invite_preview',{p_username:name});
+    if(error) throw error;
+    const u=(data||[])[0]; if(!u)return;
+    box.innerHTML=`${avatarHtml(u,54)}<div class="ibtxt"><b>@${esc(u.username)}${vbadge(u)}</b><span>invited you to LinkUp</span></div>`;
+    $('authSub').textContent='Create an account to follow them';
+  }catch(e){ /* a failed preview just means the plain login card */ }
 }
 /* Runs once at boot (above) AND on hashchange below - a notification's
    Answer action navigates an already-open-but-backgrounded tab's hash
@@ -383,6 +438,10 @@ const likeState={};   // postId -> {count, myLikeId|null}
 const saveState={};   // postId -> saveId|null
 const viewedPosts=new Set();   // session de-dupe for view registration
 let blockedIds=new Set();      // ids I have blocked
+/* Muted, which is not the same thing: their posts and stories stop being
+   served to me, they are not told, and nothing is hidden from them. Held
+   as two sets because posts and stories can be muted independently. */
+let mutedPostIds=new Set(), mutedStoryIds=new Set();
 let blockMap={};               // blockedId -> block record id (for unblock)
 let followingIds=new Set();    // ids I follow - drives the "liked by people you follow" line
 let socialProof={};            // postId -> usernames of followers-of-mine who liked it
@@ -415,14 +474,74 @@ async function loadSocialProof(posts,likes){
    people you actually follow or interact with. Rendered as its own strip
    at the top of For You rather than mixed into the ranking, so the
    seen-post suppression in get_feed_for_you stays exactly as it is. */
+/* People you may know. The app has every feature and almost no graph, so a
+   new account sees an empty Following tab and gives For You nothing to rank
+   on. This is the way out of that, and it earns its place at the top of the
+   feed only while the account is still small. */
+let suggestCache=null;
+async function loadSuggestions(n){
+  try{
+    const {data,error}=await sb.rpc('suggest_people',{page_size:n||12});
+    if(error) throw error;
+    return data||[];
+  }catch(e){ return []; }
+}
+function suggestCardHtml(u){
+  const btn=u.is_private
+    ? `<button class="sgfollow" onclick="event.stopPropagation();requestFollow('${u.id}').then(()=>renderSuggestRail())">Request</button>`
+    : `<button class="sgfollow" onclick="event.stopPropagation();followFrom('${u.id}').then(()=>renderSuggestRail())">Follow</button>`;
+  return `<div class="sgcard" onclick="openProfile('${u.id}')">
+    <button class="sgx" title="Not interested" onclick="event.stopPropagation();dismissSuggestion('${u.id}')">&times;</button>
+    ${avatarHtml(u,62)}
+    <div class="sgname">${esc(u.username)}${vbadge(u)}</div>
+    <div class="sgwhy">${esc(u.reason||'')}</div>
+    ${btn}
+  </div>`;
+}
+async function renderSuggestRail(){
+  const host=$('suggestRail'); if(!host)return;
+  host.innerHTML='';
+  /* Following is a feed of people you chose; suggestions belong on For You
+     and on Search, not in the middle of that. */
+  if(feedMode!=='all')return;
+  const mode=feedMode;
+  const people=await loadSuggestions(10);
+  /* The fetch is in flight for as long as it takes; tapping Following
+     during it would otherwise drop a stale rail into a feed that should
+     never show one. */
+  if(!me()||feedMode!==mode)return;
+  suggestCache=people;
+  /* The invite card is always last, and is the whole rail when there is
+     nobody left to suggest - on an instance this small, running out of
+     people is the normal case, and "nothing here" is a dead end. */
+  host.innerHTML=`<div class="sghead">${people.length?'Suggested for you':'Grow your feed'}</div>`
+    +`<div class="sgrow">${people.map(suggestCardHtml).join('')}${inviteCardHtml()}</div>`;
+}
+function inviteCardHtml(){
+  return `<div class="sgcard sginvite" onclick="shareMyLink()">
+    <div class="sgicon">${icon('send',26)}</div>
+    <div class="sgname">Invite a friend</div>
+    <div class="sgwhy">Share your profile link</div>
+    <button class="sgfollow" onclick="event.stopPropagation();shareMyLink()">Share</button>
+  </div>`;
+}
+async function dismissSuggestion(uid){
+  const card=document.querySelector(`.sgcard [onclick*="${uid}"]`);
+  try{
+    await sb.from('suggestion_dismissals').upsert({user_id:me().id,dismissed_id:uid},{onConflict:'user_id,dismissed_id',ignoreDuplicates:true});
+  }catch(e){ /* dismissing is a nicety; never block the UI on it */ }
+  renderSuggestRail();
+  if(currentScreen==='Search'&&!$('searchInput').value.trim())loadExplore();
+}
 async function renderMissedStrip(){
   const host=$('missedStrip'); if(!host)return;
   host.innerHTML='';
   if(feedMode!=='all')return;
+  const mode=feedMode;
   try{
     const {data,error}=await sb.rpc('get_missed_posts',{page_size:3});
     if(error) throw error;
-    const rows=data||[]; if(!rows.length)return;
+    const rows=data||[]; if(!rows.length||feedMode!==mode)return;   // same race as the rail
     const authorIds=[...new Set(rows.map(p=>p.author_id))];
     const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url,is_verified').in('id',authorIds);
     const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
@@ -440,17 +559,25 @@ async function renderMissedStrip(){
    to the profile to do it loses most of them. */
 function followBtnHtml(uid,cls){
   if(!uid||!me()||uid===me().id||followingIds.has(uid))return '';
-  return `<button class="followbtn${cls?' '+cls:''}" data-follow="${uid}" onclick="event.stopPropagation();followFrom('${uid}')">Follow</button>`;
+  const asked=requestedIds.has(uid);
+  return `<button class="followbtn${cls?' '+cls:''}${asked?' done':''}" data-follow="${uid}" onclick="event.stopPropagation();followFrom('${uid}')">${asked?'Requested':'Follow'}</button>`;
 }
 function setFollowBtns(uid,following){
+  const asked=requestedIds.has(uid);
   document.querySelectorAll('[data-follow="'+uid+'"]').forEach(b=>{
-    b.textContent=following?'Following':'Follow';
-    b.classList.toggle('done',following);
-    b.disabled=following;
+    b.textContent=following?'Following':(asked?'Requested':'Follow');
+    b.classList.toggle('done',following||asked);
+    b.disabled=following;                 // a sent request can still be withdrawn
   });
 }
 async function followFrom(uid){
   if(!uid||uid===me().id||followingIds.has(uid))return;
+  if(requestedIds.has(uid))return cancelFollowRequest(uid);
+  /* A private account has to be asked, not just followed - the insert
+     policy refuses it outright, so check before writing rather than
+     showing a failure the user can do nothing about. */
+  const u=await getUser(uid);
+  if(u&&u.is_private)return requestFollow(uid);
   followingIds.add(uid);
   setFollowBtns(uid,true);            // optimistic: the tap should feel instant
   try{
@@ -466,6 +593,73 @@ async function followFrom(uid){
     setFollowBtns(uid,false);
     toast('Follow failed: '+sbErr(e));
   }
+}
+/* Requests I've sent that are still waiting on approval. Kept next to
+   followingIds so a button can tell "Follow" from "Requested" without a
+   round trip. */
+const requestedIds=new Set();
+async function loadRequested(){
+  requestedIds.clear();
+  if(!me())return;
+  try{
+    const {data}=await sb.from('follow_requests').select('target_id').eq('requester_id',me().id);
+    (data||[]).forEach(r=>requestedIds.add(r.target_id));
+  }catch(e){}
+}
+/* A private account can only be followed by approval, so asking is a
+   different write and a different button. */
+async function requestFollow(uid){
+  if(!uid||uid===me().id||followingIds.has(uid)||requestedIds.has(uid))return;
+  requestedIds.add(uid); setFollowBtns(uid,false);
+  try{
+    const {error}=await sb.from('follow_requests')
+      .upsert({requester_id:me().id,target_id:uid},{onConflict:'requester_id,target_id',ignoreDuplicates:true});
+    if(error) throw error;
+    notify('followreq',uid);
+    toast('Follow request sent');
+  }catch(e){
+    requestedIds.delete(uid); setFollowBtns(uid,false);
+    toast('Request failed: '+sbErr(e));
+  }
+}
+async function cancelFollowRequest(uid){
+  requestedIds.delete(uid); setFollowBtns(uid,false);
+  try{ await sb.from('follow_requests').delete().eq('requester_id',me().id).eq('target_id',uid); }
+  catch(e){ toast('Could not withdraw: '+sbErr(e)); }
+}
+async function approveFollowRequest(uid){
+  try{
+    const {error}=await sb.rpc('approve_follow_request',{p_requester:uid});
+    if(error) throw error;
+    toast('Request approved');
+    openFollowRequests();
+  }catch(e){ toast('Approve failed: '+sbErr(e)); }
+}
+async function denyFollowRequest(uid){
+  try{
+    const {error}=await sb.from('follow_requests').delete().eq('requester_id',uid).eq('target_id',me().id);
+    if(error) throw error;
+    openFollowRequests();
+  }catch(e){ toast('Could not deny: '+sbErr(e)); }
+}
+async function openFollowRequests(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Follow requests';
+  const body=$('listBody'); body.innerHTML=skRows(5);
+  try{
+    const {data,error}=await sb.from('follow_requests')
+      .select('requester_id,created_at').eq('target_id',me().id).order('created_at',{ascending:false});
+    if(error) throw error;
+    const reqs=data||[];
+    if(!reqs.length){ body.innerHTML='<div class="empty">No pending requests</div>'; return; }
+    const users={};
+    await Promise.all(reqs.map(async r=>{users[r.requester_id]=await getUser(r.requester_id);}));
+    body.innerHTML=reqs.map(r=>{
+      const u=users[r.requester_id]||{username:'someone'};
+      return `<div class="row"><div class="cav" onclick="closeList();openProfile('${r.requester_id}')">${avatarHtml(u,44)}</div>
+        <div class="last" onclick="closeList();openProfile('${r.requester_id}')"><div class="snip"><b>${esc(u.username)}</b> wants to follow you</div></div>
+        <div class="reqbtns"><button class="grad" onclick="approveFollowRequest('${r.requester_id}')">Approve</button><button onclick="denyFollowRequest('${r.requester_id}')">Deny</button></div></div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="empty">Could not load requests</div>'; }
 }
 function socialProofHtml(pid){
   const n=socialProof[pid]; if(!n||!n.length)return '';
@@ -484,8 +678,8 @@ function skReel(){return `<div class="reel">${skBlock('100%','100%','0')}</div>`
 function skStories(n){return Array.from({length:n||5},()=>`<div class="scell">${skBlock('58px','58px','50%')}${skBlock('44px','10px','5px','margin-top:6px')}</div>`).join('');}
 async function loadFeed(){
   const box=$('sFeed');
-  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="missedStrip"></div><div id="feedPosts"></div>`;
-  renderFeedTabs(); loadStories(); renderMissedStrip(); loadFeedPosts(true);
+  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="suggestRail"></div><div id="missedStrip"></div><div id="feedPosts"></div>`;
+  renderFeedTabs(); loadStories(); renderSuggestRail(); renderMissedStrip(); loadFeedPosts(true);
 }
 let feedPage=1, feedLoading=false, feedDone=false, feedFollowIds=null, feedToken=0, feedMoreObs=null;
 let feedCursor=null; // {score,created_at,id} keyset cursor for the "For You" ranked feed
@@ -535,7 +729,7 @@ async function loadFeedPosts(reset){
       if(posts.length<9) feedDone=true;
     }
     if(myTok!==feedToken){feedLoading=false;return;}
-    posts=posts.filter(p=>!blockedIds.has(p.author_id));
+    posts=posts.filter(p=>!blockedIds.has(p.author_id)&&!mutedPostIds.has(p.author_id));
     if(reset) box.innerHTML='';
     if(feedPage===1 && !posts.length){ box.innerHTML='<div class="empty">'+(feedMode==='following'?'No posts from people you follow yet.':'No posts yet.<br>Create your first post!')+'</div>'; feedDone=true; feedLoading=false; return; }
     if(posts.length){
@@ -574,7 +768,7 @@ function armFeedPrefetch(){
   feedMoreObs.observe(target);
 }
 function renderFeedTabs(){const t=$('ftabs');if(!t)return;t.innerHTML=`<button class="${feedMode==='all'?'on':''}" onclick="setFeedMode('all')">For You</button><button class="${feedMode==='following'?'on':''}" onclick="setFeedMode('following')">Following</button>`;}
-function setFeedMode(m){feedMode=m;renderFeedTabs();renderMissedStrip();loadFeedPosts(true);}
+function setFeedMode(m){feedMode=m;renderFeedTabs();renderSuggestRail();renderMissedStrip();loadFeedPosts(true);}
 $('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ onFeedScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
 function applyVideoCrop(video,crop){
   if(!crop)return;
@@ -775,18 +969,87 @@ async function toggleSave(pid){
     else{ saveState[pid]='tmp'; if(el){el.classList.add('saved');el.innerHTML=icon('bookmark',26,{fill:'currentColor'});} const {data:r}=await sb.from('saves').insert({post_id:pid,user_id:me().id}).select().single(); saveState[pid]=r.id; toast('Saved'); }
   }catch(e){ saveState[pid]=cur||null; if(el){el.classList.toggle('saved',!!saveState[pid]);el.innerHTML=icon('bookmark',26,{fill:saveState[pid]?'currentColor':'none'});} toast('Save failed: '+sbErr(e)); }
 }
-async function openSaved(){
+/* Saves were a flat list, which becomes a graveyard past one screenful.
+   A post can sit in several collections or none - "All" is simply
+   everything you saved, not a collection row. */
+let savedCollection=null, myCollections=[];
+async function openSaved(collectionId){
   $('saved').classList.add('on'); rearm();
+  savedCollection=collectionId||null;
   const body=$('savedBody');
   body.innerHTML='<div style="padding:30px;text-align:center;color:var(--mut)">Loading...</div>';
   try{
-    const {data:rows,error}=await sb.from('saves').select('post_id').eq('user_id',me().id).order('created_at',{ascending:false});
+    const [{data:saves,error},cols]=await Promise.all([
+      sb.from('saves').select('post_id').eq('user_id',me().id).order('created_at',{ascending:false}),
+      loadCollections()
+    ]);
     if(error) throw error;
-    if(!rows.length){ body.innerHTML='<div class="empty">No saved posts yet</div>'; return; }
+    myCollections=cols;
+
+    let ids=(saves||[]).map(r=>r.post_id);
+    if(savedCollection){
+      const {data:items}=await sb.from('collection_items').select('post_id').eq('collection_id',savedCollection).order('added_at',{ascending:false});
+      ids=(items||[]).map(r=>r.post_id);
+    }
+    const tabs=collectionTabsHtml();
+    if(!ids.length){ body.innerHTML=tabs+'<div class="empty">'+(savedCollection?'Nothing in this collection yet':'No saved posts yet')+'</div>'; return; }
     const posts=[];
-    for(const r of rows){ const p=await getPost(r.post_id); if(p) posts.push(p); }
-    body.innerHTML=posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No saved posts yet</div>';
+    for(const id of ids){ const p=await getPost(id); if(p) posts.push(p); }
+    body.innerHTML=tabs+(posts.length?`<div class="grid">${posts.map(savedCell).join('')}</div>`:'<div class="empty">Nothing here yet</div>');
   }catch(e){ body.innerHTML='<div class="empty">Could not load saved posts<br><span style="font-size:12px;opacity:.7">'+esc(sbErr(e))+'</span></div>'; }
+}
+/* Same cell as everywhere else, plus a long-press-free way to file it. */
+function savedCell(p){
+  return `<div class="savedwrap">${gridCell(p)}<button class="savedfile" title="Add to collection" onclick="event.stopPropagation();openCollectionPicker('${p.id}')">${icon('plus',15)}</button></div>`;
+}
+async function loadCollections(){
+  try{
+    const {data,error}=await sb.from('collections').select('*').eq('owner_id',me().id).order('name');
+    if(error) throw error;
+    return data||[];
+  }catch(e){ return []; }
+}
+function collectionTabsHtml(){
+  const chip=(id,label)=>`<button class="ctab${savedCollection===id?' on':''}" onclick="openSaved(${id?`'${id}'`:''})">${esc(label)}</button>`;
+  return `<div class="ctabs">${chip(null,'All')}${myCollections.map(c=>chip(c.id,c.name)).join('')}
+    <button class="ctab cnew" onclick="newCollection()">+ New</button></div>`;
+}
+async function newCollection(){
+  openTextEditor('New collection','',async name=>{
+    name=(name||'').trim();
+    if(!name)return;
+    try{
+      const {error}=await sb.from('collections').insert({owner_id:me().id,name});
+      if(error) throw error;
+      openSaved(savedCollection);
+    }catch(e){ toast(/duplicate|unique/i.test(sbErr(e))?'You already have a collection with that name':'Could not create: '+sbErr(e)); }
+  });
+}
+async function openCollectionPicker(pid){
+  if(!myCollections.length){ toast('Make a collection first'); return; }
+  let inIds=new Set();
+  try{
+    const {data}=await sb.from('collection_items').select('collection_id').eq('post_id',pid);
+    (data||[]).forEach(r=>inIds.add(r.collection_id));
+  }catch(e){}
+  $('actMenu').innerHTML=myCollections.map(c=>
+    `<button onclick="closeActMenu();toggleInCollection('${c.id}','${pid}',${inIds.has(c.id)})">${inIds.has(c.id)?'Remove from':'Add to'} ${esc(c.name)}</button>`
+  ).join('')+`<button onclick="closeActMenu()">Cancel</button>`;
+  $('actMenuWrap').classList.add('on'); rearm();
+}
+async function toggleInCollection(cid,pid,isIn){
+  try{
+    if(isIn){
+      const {error}=await sb.from('collection_items').delete().eq('collection_id',cid).eq('post_id',pid);
+      if(error) throw error;
+      toast('Removed from collection');
+    }else{
+      const {error}=await sb.from('collection_items').upsert({collection_id:cid,post_id:pid},{onConflict:'collection_id,post_id',ignoreDuplicates:true});
+      if(error) throw error;
+      toast('Added to collection');
+    }
+    if($('saved').classList.contains('on'))openSaved(savedCollection);
+  }catch(e){ toast('Failed: '+sbErr(e)); }
 }
 function closeSaved(){ $('saved').classList.remove('on'); }
 /* ============ PROFILE QR ============ */
@@ -811,8 +1074,9 @@ async function openQR(){
 function closeQR(){ $('qr').classList.remove('on'); }
 function shareMyLink(){
   const link=myProfileLink();
-  if(navigator.share){ navigator.share({title:'LinkUp',text:'Find me on LinkUp: @'+me().username,url:link}).catch(()=>{}); return; }
-  try{ navigator.clipboard.writeText(link); toast('Link copied'); }catch(e){ toast(link); }
+  const text='Join me on LinkUp — I\u2019m @'+me().username;
+  if(navigator.share){ navigator.share({title:'LinkUp',text,url:link}).catch(()=>{}); return; }
+  try{ navigator.clipboard.writeText(link); toast('Invite link copied'); }catch(e){ toast(link); }
 }
 
 /* ============ POST VIEWS ============ */
@@ -931,6 +1195,39 @@ async function loadBlocks(){
     (rows||[]).forEach(r=>{ blockedIds.add(r.blocked_id); blockMap[r.blocked_id]=r.id; });
   }catch(e){ console.warn('blocks read failed:',sbErr(e)); }
 }
+async function loadMutes(){
+  mutedPostIds=new Set(); mutedStoryIds=new Set();
+  if(!me())return;
+  try{
+    const {data,error}=await sb.from('mutes').select('muted_id,mute_posts,mute_stories').eq('muter_id',me().id);
+    if(error) throw error;
+    (data||[]).forEach(r=>{ if(r.mute_posts)mutedPostIds.add(r.muted_id); if(r.mute_stories)mutedStoryIds.add(r.muted_id); });
+  }catch(e){ console.warn('mutes read failed:',sbErr(e)); }
+}
+/* Named apart from toggleMute(), which mutes a *conversation's*
+   notifications and is a different feature entirely. */
+function isUserMuted(uid){ return mutedPostIds.has(uid)||mutedStoryIds.has(uid); }
+async function toggleMuteUser(uid){
+  if(!uid||uid===me().id)return;
+  const was=isUserMuted(uid);
+  try{
+    if(was){
+      const {error}=await sb.from('mutes').delete().eq('muter_id',me().id).eq('muted_id',uid);
+      if(error) throw error;
+      mutedPostIds.delete(uid); mutedStoryIds.delete(uid);
+      toast('Unmuted');
+    }else{
+      const {error}=await sb.from('mutes').upsert({muter_id:me().id,muted_id:uid,mute_posts:true,mute_stories:true},{onConflict:'muter_id,muted_id'});
+      if(error) throw error;
+      mutedPostIds.add(uid); mutedStoryIds.add(uid);
+      /* Deliberately quiet about what it does to them, because it does
+         nothing to them - that is the whole appeal over blocking. */
+      toast('Muted. They won\u2019t be told.');
+    }
+    if(currentScreen==='Feed')loadFeedPosts(true);
+    else if(currentScreen==='Profile')loadProfile(uid);
+  }catch(e){ toast('Mute failed: '+sbErr(e)); }
+}
 async function blockUser(uid){
   try{ const {data:r}=await sb.from('blocks').insert({blocker_id:me().id,blocked_id:uid}).select().single(); blockedIds.add(uid); blockMap[uid]=r.id; toast('User blocked'); }
   catch(e){ toast('Block failed: '+sbErr(e)); }
@@ -949,16 +1246,80 @@ async function toggleBlock(uid,fromProfile){
 }
 function reportTarget(kind,target){
   openTextEditor('Report '+(kind==='post'?'post':'user'),'',async reason=>{
-    try{ await sb.from('reports').insert({reporter_id:me().id,kind:kind,target_id:target,reason:(reason||'').slice(0,500)}); toast('Report submitted. Thank you.'); }
+    try{ await sb.from('reports').insert({reporter_id:me().id,kind:kind,target_id:target,reason:(reason||'').slice(0,500)}); toast('Report sent to moderators.'); }
     catch(e){ toast('Report failed: '+sbErr(e)); }
   });
+}
+/* ---- moderation queue ----
+   The report button used to write a row into a table nobody could read.
+   The official account is a moderator; for everyone else none of this
+   renders, and the RPCs refuse them anyway. */
+let iAmModerator=false, openReportCount=0;
+async function refreshModeration(){
+  iAmModerator=!!(me()&&me().is_moderator);
+  openReportCount=0;
+  if(!iAmModerator)return;
+  try{
+    const {count}=await sb.from('reports').select('id',{count:'exact',head:true}).eq('status','open');
+    openReportCount=count||0;
+  }catch(e){ console.warn('MODPROBE',e&&e.message); }
+}
+async function openReports(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Reports';
+  const body=$('listBody'); body.innerHTML=skRows(5);
+  try{
+    const {data,error}=await sb.from('reports').select('*').eq('status','open').order('created_at',{ascending:false}).limit(50);
+    if(error) throw error;
+    const rows=data||[];
+    if(!rows.length){ body.innerHTML='<div class="empty">Nothing to review</div>'; openReportCount=0; return; }
+    const who={};
+    await Promise.all([...new Set(rows.map(r=>r.reporter_id))].map(async id=>{who[id]=await getUser(id);}));
+    body.innerHTML=rows.map(r=>{
+      const rep=who[r.reporter_id]||{username:'someone'};
+      /* A post report opens the post so the moderator sees what was
+         reported before deciding; a user report opens the profile. */
+      const open=r.kind==='post'?`openPostView('${r.target_id}')`:`openProfile('${r.target_id}')`;
+      const remove=r.kind==='post'
+        ? `<button class="danger" onclick="event.stopPropagation();removeReportedPost('${r.target_id}')">Remove post</button>`
+        : '';
+      return `<div class="row rprow">
+        <div class="last">
+          <div class="nm">${r.kind==='post'?'Post':'User'} reported by <b>${esc(rep.username)}</b></div>
+          <div class="snip">${esc(r.reason||'No reason given')}</div>
+          <div class="rpwhen">${timeAgo(r.created_at)}</div>
+        </div>
+        <div class="reqbtns">
+          <button onclick="event.stopPropagation();closeList();${open}">View</button>
+          ${remove}
+          <button onclick="event.stopPropagation();resolveReport('${r.id}','dismissed')">Dismiss</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="empty">Could not load reports</div>'; }
+}
+async function resolveReport(id,status){
+  try{
+    const {error}=await sb.rpc('resolve_report',{p_report_id:id,p_status:status,p_resolution:null});
+    if(error) throw error;
+    toast(status==='dismissed'?'Dismissed':'Marked actioned');
+    await refreshModeration(); openReports();
+  }catch(e){ toast('Failed: '+sbErr(e)); }
+}
+async function removeReportedPost(pid){
+  try{
+    const {error}=await sb.rpc('moderator_remove_post',{p_post_id:pid,p_resolution:'Post removed by a moderator'});
+    if(error) throw error;
+    toast('Post removed');
+    await refreshModeration(); openReports();
+  }catch(e){ toast('Remove failed: '+sbErr(e)); }
 }
 function closeActMenu(){ $('actMenuWrap').classList.remove('on'); }
 $('actMenuWrap').onclick=e=>{ if(e.target.id==='actMenuWrap')closeActMenu(); };
 function openUserMenu(uid){
-  const blocked=blockedIds.has(uid); const cf=closeFriendIds.has(uid);
+  const blocked=blockedIds.has(uid); const cf=closeFriendIds.has(uid); const muted=isUserMuted(uid);
   $('actMenu').innerHTML=
     `<button onclick="closeActMenu();toggleCloseFriend('${uid}')">${cf?'Remove from Close Friends':'Add to Close Friends'}</button>`+
+    `<button onclick="closeActMenu();toggleMuteUser('${uid}')">${muted?'Unmute user':'Mute user'}</button>`+
     `<button onclick="closeActMenu();reportTarget('user','${uid}')">Report user</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',true)">${blocked?'Unblock user':'Block user'}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
@@ -968,6 +1329,7 @@ function openOtherPostMenu(pid,uid,uname){
   const blocked=blockedIds.has(uid);
   $('actMenu').innerHTML=
     `<button onclick="closeActMenu();notInterested('${pid}')">Not interested</button>`+
+    `<button onclick="closeActMenu();toggleMuteUser('${uid}')">${isUserMuted(uid)?'Unmute @'+esc(uname):'Mute @'+esc(uname)}</button>`+
     `<button onclick="closeActMenu();reportTarget('post','${pid}')">Report post</button>`+
     `<button class="danger" onclick="closeActMenu();toggleBlock('${uid}',false)">${blocked?'Unblock @'+esc(uname):'Block @'+esc(uname)}</button>`+
     `<button onclick="closeActMenu()">Cancel</button>`;
@@ -1323,15 +1685,26 @@ async function backfillThumb(p){
   }catch(e){}
   return false;
 }
-$('shareBtn').onclick=async()=>{
+/* Save draft / Schedule / Share all take the same path: the media is
+   uploaded and a posts row written exactly as before. Only `status` (and
+   publish_at) differ, so nothing about the upload pipeline changes. */
+$('draftBtn').onclick=()=>publishPost('draft');
+$('scheduleBtn').onclick=()=>{
   if(!mediaKind){toast('Choose a photo or video first');return;}
-  $('shareBtn').textContent='Sharing…';$('shareBtn').disabled=true;
+  openScheduleSheet(when=>publishPost('scheduled',when));
+};
+$('shareBtn').onclick=()=>publishPost('published');
+async function publishPost(status,publishAt){
+  if(!mediaKind){toast('Choose a photo or video first');return;}
+  const label={draft:'Saving…',scheduled:'Scheduling…',published:'Sharing…'}[status];
+  $('shareBtn').textContent=label;$('shareBtn').disabled=true;$('draftBtn').disabled=true;$('scheduleBtn').disabled=true;
   try{
     const tagStr=$('postTags').value.trim();
     const folder=me().id+'/'+randPath();
-    const row={author_id:me().id,caption:$('postCap').value.trim(),audience:postAudience==='close'?'close':'public'};
+    const row={author_id:me().id,caption:$('postCap').value.trim(),audience:postAudience==='close'?'close':'public',status};
+    if(status==='scheduled')row.publish_at=publishAt;
     if(tagStr)row.tags=tagStr;
-    showUpload('Posting…'); setUpload(15);
+    showUpload({draft:'Saving draft…',scheduled:'Scheduling…',published:'Posting…'}[status]); setUpload(15);
     if(mediaKind==='image'){
       const blob=await photoCropper.exportBlob(1000,1000,0.85);
       row.image_url=await uploadFile('posts',folder+'/image.jpg',new File([blob],'post.jpg',{type:'image/jpeg'}));
@@ -1355,11 +1728,83 @@ $('shareBtn').onclick=async()=>{
     const {data:rec,error}=await sb.from('posts').insert(row).select().single();
     if(error) throw error;
     setUpload(100); hideUpload();
-    notifyTags(tagStr,rec.id);
-    resetCreate(); $('postCap').value=''; $('postTags').value=''; toast('Posted!'); show('Feed');
+    /* Only a live post should notify the people tagged in it - a draft may
+       never go out, and a scheduled one notifies when it actually does. */
+    if(status==='published')notifyTags(tagStr,rec.id);
+    resetCreate(); $('postCap').value=''; $('postTags').value='';
+    if(status==='published'){ toast('Posted!'); show('Feed'); }
+    else if(status==='draft'){ toast('Saved to drafts'); show('Profile'); }
+    else { toast('Scheduled for '+fmtWhen(publishAt)); show('Profile'); }
   }catch(e){hideUpload();toast('Post failed: '+sbErr(e));}
-  finally{$('shareBtn').disabled=false;$('shareBtn').textContent='Share';}
-};
+  finally{$('shareBtn').disabled=false;$('shareBtn').textContent='Share';$('draftBtn').disabled=false;$('scheduleBtn').disabled=false;}
+}
+/* Datetime-local gives a value with no timezone; it means the user's local
+   clock, which is what new Date() reads it as. */
+function openScheduleSheet(onPick){
+  const min=new Date(Date.now()+5*60000);
+  const pad=n=>String(n).padStart(2,'0');
+  const local=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  $('actMenu').innerHTML=`<div class="schedrow">
+      <label for="schedWhen">Publish at</label>
+      <input type="datetime-local" id="schedWhen" min="${local(min)}" value="${local(new Date(Date.now()+3600000))}">
+    </div>
+    <button class="grad" id="schedGo">Schedule</button>
+    <button onclick="closeActMenu()">Cancel</button>`;
+  $('actMenuWrap').classList.add('on'); rearm();
+  $('schedGo').onclick=()=>{
+    const v=$('schedWhen').value;
+    if(!v){ toast('Pick a time'); return; }
+    const when=new Date(v);
+    if(isNaN(when)||when.getTime()<Date.now()+60000){ toast('Pick a time at least a minute from now'); return; }
+    closeActMenu(); onPick(when.toISOString());
+  };
+}
+/* toLocaleString() spells out the full date and seconds, which overflows
+   the row; month/day + time is all anyone needs here. */
+function fmtWhen(t){
+  try{ return new Date(t).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+  catch(_){ return new Date(t).toLocaleString(); }
+}
+/* ---- drafts & scheduled ---- */
+async function openDrafts(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Drafts & scheduled';
+  const body=$('listBody'); body.innerHTML=skRows(4);
+  try{
+    const {data,error}=await sb.from('posts').select('*')
+      .eq('author_id',me().id).in('status',['draft','scheduled'])
+      .order('created_at',{ascending:false});
+    if(error) throw error;
+    const rows=data||[];
+    if(!rows.length){ body.innerHTML='<div class="empty">Nothing saved for later</div>'; return; }
+    body.innerHTML=rows.map(p=>{
+      const thumb=p.thumb_url||p.image_url||(p.photos&&p.photos[0])||'';
+      const when=p.status==='scheduled'?'Goes out '+fmtWhen(p.publish_at):'Draft';
+      return `<div class="row drow">
+        <div class="dthumb">${thumb?`<img src="${safeUrl(thumb)}" alt="">`:icon(p.video_url?'reels':'image',18)}</div>
+        <div class="last"><div class="nm">${esc(p.caption||'No caption')}</div><div class="snip">${esc(when)}</div></div>
+        <div class="reqbtns">
+          <button class="grad" onclick="publishDraft('${p.id}','${esc(p.tags||'')}')">Post now</button>
+          <button class="danger" onclick="deleteDraft('${p.id}')">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="empty">Could not load drafts</div>'; }
+}
+async function publishDraft(pid,tags){
+  try{
+    const {error}=await sb.from('posts').update({status:'published',publish_at:null,created_at:new Date().toISOString()}).eq('id',pid);
+    if(error) throw error;
+    if(tags)notifyTags(tags,pid);
+    toast('Posted!'); closeList(); show('Feed');
+  }catch(e){ toast('Could not post: '+sbErr(e)); }
+}
+async function deleteDraft(pid){
+  try{
+    const {error}=await sb.from('posts').delete().eq('id',pid);
+    if(error) throw error;
+    toast('Deleted'); openDrafts();
+  }catch(e){ toast('Delete failed: '+sbErr(e)); }
+}
 
 /* ================= SEARCH ================= */
 let searchT=null;
@@ -1380,7 +1825,18 @@ async function runSearch(q){
 }
 async function loadExplore(){
   const box=$('searchResults'); box.innerHTML=skGrid(9);
-  try{ const {data}=await sb.from('posts').select('*').order('created_at',{ascending:false}).limit(18); const posts=(data||[]).filter(p=>!blockedIds.has(p.author_id)); box.innerHTML=posts.length?('<div class="slabel">Explore</div><div class="grid">'+posts.map(gridCell).join('')+'</div>'):'<div class="empty">Nothing to explore yet</div>'; }catch(e){box.innerHTML='';}
+  try{
+    const [people,{data}]=await Promise.all([
+      loadSuggestions(12),
+      sb.from('posts').select('*').order('created_at',{ascending:false}).limit(18)
+    ]);
+    const posts=(data||[]).filter(p=>!blockedIds.has(p.author_id)&&!mutedPostIds.has(p.author_id));
+    /* Search with an empty box is where someone goes looking for people, so
+       suggestions lead here rather than trailing the grid. */
+    let html=people.length?`<div class="slabel">Suggested for you</div><div class="sgrow">${people.map(suggestCardHtml).join('')}</div>`:'';
+    html+=posts.length?('<div class="slabel">Explore</div><div class="grid">'+posts.map(gridCell).join('')+'</div>'):'';
+    box.innerHTML=html||'<div class="empty">Nothing to explore yet</div>';
+  }catch(e){box.innerHTML='';}
 }
 function gridCell(p){
   if(p.poll&&!p.image_url&&!p.thumb_url){ const q=(p.poll&&p.poll.q)||''; return `<div class="gcell gpoll" onclick="openPostView('${p.id}')"><span class="gpollicon">${icon('poll',26)}</span><span class="gpollq">${esc(q)}</span></div>`; }
@@ -1402,10 +1858,17 @@ async function loadProfile(uid){
   $('main').classList.remove('reels');
   try{
     const isMe=uid===me().id;
-    const u=isMe?me():await getUser(uid);
+    if(isMe){ await refreshFollowRequests(); await refreshModeration(); } else await loadRequested();
+    /* getUser caches, and is_private may have just been toggled on the
+       profile being opened, so read a fresh row for someone else's page. */
+    const u=isMe?me():await getUser(uid,true);
     if(!u) throw new Error('User not found');
     const {data:postRows}=await sb.from('posts').select('*').eq('author_id',uid).order('created_at',{ascending:false}).limit(60);
-    const posts=postRows||[];
+    /* RLS lets an author read their own drafts, which is what makes the
+       drafts list work - but the public grid is only what is live. */
+    const all=postRows||[];
+    const posts=all.filter(p=>!p.status||p.status==='published');
+    const laterN=all.length-posts.length;
     let followersN=0,followingN=0,followId=null;
     try{
       const {count:fr}=await sb.from('follows').select('id',{count:'exact',head:true}).eq('following_id',uid);
@@ -1414,22 +1877,48 @@ async function loadProfile(uid){
       if(!isMe){ const {data:mf}=await sb.from('follows').select('id').eq('follower_id',me().id).eq('following_id',uid).maybeSingle(); followId=mf?mf.id:null; }
     }catch(e){}
     const blocked=!isMe&&blockedIds.has(uid);
-    const grid=blocked?'<div class="empty">You blocked this user</div>':(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts yet</div>');
+    /* A private account shows its header to everyone - name, photo, counts -
+       and nothing else until you're approved. Posts are already withheld by
+       RLS; this is so the page explains itself instead of looking empty. */
+    const locked=!isMe&&!blocked&&u.is_private&&!followId;
+    const grid=blocked?'<div class="empty">You blocked this user</div>'
+      :locked?`<div class="locked">${icon('lock',30)}<div class="lktitle">This account is private</div><div class="lksub">Follow to see their photos and videos.</div></div>`
+      :(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts yet</div>');
     const btns=isMe
-      ?`<button onclick="openEdit()">Edit profile</button><button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
+      ?`<button onclick="openEdit()">Edit profile</button>${u.is_private?`<button onclick="openFollowRequests()">Requests${pendingReqCount?` <b>${pendingReqCount}</b>`:''}</button>`:''}${iAmModerator?`<button onclick="openReports()">Reports${openReportCount?` <b>${openReportCount}</b>`:''}</button>`:''}${laterN?`<button onclick="openDrafts()">Drafts <b>${laterN}</b></button>`:''}<button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
       :(blocked
         ?`<button class="grad" style="color:#fff" onclick="toggleBlock('${uid}',true)">Unblock</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`
-        :`<button id="followBtn" class="${followId?'':'grad'}" ${followId?'':'style="color:#fff"'} onclick="toggleFollow('${uid}','${followId||''}')">${followId?'Following':'Follow'}</button><button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
+        :`${followMainBtn(uid,u,followId)}<button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
+    profileHighlights=(blocked||locked)?[]:await loadHighlights(uid);
     box.innerHTML=`<div class="prof">
-      <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div onclick="openFollowList('${uid}','followers')" style="cursor:pointer"><b>${followersN}</b><span>followers</span></div><div onclick="openFollowList('${uid}','following')" style="cursor:pointer"><b>${followingN}</b><span>following</span></div></div></div>
+      <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div ${locked?'':`onclick="openFollowList('${uid}','followers')" style="cursor:pointer"`}><b>${followersN}</b><span>followers</span></div><div ${locked?'':`onclick="openFollowList('${uid}','following')" style="cursor:pointer"`}><b>${followingN}</b><span>following</span></div></div></div>
       <div class="pname">${esc(u.name||u.username)}${vbadge(u)}${isMe?openStreakHtml(u):''}</div>
       <div class="mut" style="color:var(--mut);font-size:13px;margin-bottom:6px">@${esc(u.username)}</div>
-      ${(!isMe&&!blocked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
+      ${(!isMe&&!blocked&&!locked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
       <div class="pbio">${esc(u.bio||'')}</div>
       <div class="pbtns">${btns}</div>
-    </div>${grid}`;
+    </div>${highlightsHtml(uid,isMe)}${grid}`;
     if(isMe){const need=posts.filter(p=>p.video_url&&!p.thumb_url);if(need.length)(async()=>{let any=false;for(const p of need){if(await backfillThumb(p))any=true;}if(any&&currentScreen==='Profile')loadProfile(me().id);})();}
   }catch(e){box.innerHTML='<div class="empty">Could not load profile</div>';}
+}
+/* Follow / Following / Requested. A private account you haven't been
+   approved for gets "Request", and tapping again withdraws it. */
+function followMainBtn(uid,u,followId){
+  if(followId)return `<button id="followBtn" onclick="toggleFollow('${uid}','${followId}')">Following</button>`;
+  if(u&&u.is_private){
+    return requestedIds.has(uid)
+      ? `<button id="followBtn" onclick="cancelFollowRequest('${uid}').then(()=>loadProfile('${uid}'))">Requested</button>`
+      : `<button id="followBtn" class="grad" style="color:#fff" onclick="requestFollow('${uid}').then(()=>loadProfile('${uid}'))">Request</button>`;
+  }
+  return `<button id="followBtn" class="grad" style="color:#fff" onclick="toggleFollow('${uid}','')">Follow</button>`;
+}
+let pendingReqCount=0;
+async function refreshFollowRequests(){
+  if(!me())return;
+  try{
+    const {count}=await sb.from('follow_requests').select('requester_id',{count:'exact',head:true}).eq('target_id',me().id);
+    pendingReqCount=count||0;
+  }catch(e){ pendingReqCount=0; }
 }
 function openProfile(uid){loadProfile(uid);}
 function isOnline(u){ return !!(u&&u.last_seen&&(Date.now()-new Date(u.last_seen).getTime())<45000); }
@@ -1441,6 +1930,11 @@ function openEdit(){
     <input type="file" id="editAvFile" accept="image/*" style="display:none">
     <input class="field" id="editName" placeholder="Display name" value="${esc(u.name||'')}">
     <textarea id="editBio" rows="3" placeholder="Bio">${esc(u.bio||'')}</textarea>
+    <label class="togrow" for="editPrivate">
+      <span><b>Private account</b><i>Only people you approve can see your posts and stories.</i></span>
+      <input type="checkbox" id="editPrivate" ${u.is_private?'checked':''}>
+      <span class="tog"></span>
+    </label>
     <button class="btn grad" id="saveProf">Save</button>
     <button class="btn" style="background:var(--soft);margin-top:8px;color:var(--txt)" onclick="openChangePw()">Change password</button>
     <button class="btn" style="background:var(--soft);margin-top:8px;color:var(--txt)" onclick="loadProfile(me().id)">Cancel</button>
@@ -1451,7 +1945,7 @@ function openEdit(){
   $('saveProf').onclick=async()=>{
     $('saveProf').textContent='Saving…';$('saveProf').disabled=true;
     try{
-      const patch={name:$('editName').value.trim(),bio:$('editBio').value.trim()};
+      const patch={name:$('editName').value.trim(),bio:$('editBio').value.trim(),is_private:$('editPrivate').checked};
       if(newAv){ const ca=await compressImage(newAv,512,0.85); patch.avatar_url=await uploadFile('avatars',me().id+'/'+randPath()+'.jpg',ca); }
       const {data,error}=await sb.from('profiles').update(patch).eq('id',me().id).select().single();
       if(error) throw error;
@@ -1664,7 +2158,7 @@ async function openGroup(gid){
     if(mErr) throw mErr;
     const msgs=(msgRows||[]).filter(m=>!blockedIds.has(m.sender_id));
     body.innerHTML=msgs.length?msgs.map(bubble).join(''):'<div class="empty" style="padding:30px 0">No messages yet. Say hello!</div>';
-    hydrateCards(body); body.scrollTop=body.scrollHeight;
+    hydrateCards(body); hydrateChatMedia(body); body.scrollTop=body.scrollHeight;
     try{ await sb.from('group_reads').upsert({group_id:gid,user_id:me().id,last_read_at:new Date().toISOString()}); }catch(_){}
     refreshUnread();
   }catch(e){ body.innerHTML='<div class="empty">Could not load messages<br><span style="font-size:12px;opacity:.7">'+esc(sbErr(e))+'</span></div>'; }
@@ -2097,7 +2591,7 @@ async function loadStories(){
     const {data:items,error}=await sb.from('stories').select('*').gte('created_at',since).order('created_at');
     if(error) throw error;
     storyGroups={}; const order=[];
-    (items||[]).forEach(s=>{ if(!storyGroups[s.author_id]){storyGroups[s.author_id]=[]; if(s.author_id!==me().id)order.push(s.author_id);} storyGroups[s.author_id].push(s); });
+    (items||[]).forEach(s=>{ if(s.author_id!==me().id&&(blockedIds.has(s.author_id)||mutedStoryIds.has(s.author_id)))return; if(!storyGroups[s.author_id]){storyGroups[s.author_id]=[]; if(s.author_id!==me().id)order.push(s.author_id);} storyGroups[s.author_id].push(s); });
     let seenSet=new Set();
     try{ const {data:sv}=await sb.from('story_views').select('story_id').eq('viewer_id',me().id); (sv||[]).forEach(v=>seenSet.add(v.story_id)); }catch(e){}
     const users={};
@@ -2154,13 +2648,96 @@ $('scPost').onclick=async()=>{
   catch(e){ hideUpload(); toast('Story failed: '+sbErr(e)); }
   finally{ btn.disabled=false; btn.textContent='Post'; }
 };
+/* ---- story highlights ----
+   Stories leave nothing behind after 24h, so a profile is just a grid.
+   Highlights pin past stories to it. Story rows are never purged, so a
+   highlight references the story rather than copying the image. */
+let profileHighlights=[];
+async function loadHighlights(uid){
+  try{
+    const {data,error}=await sb.from('highlights').select('*').eq('owner_id',uid).order('created_at');
+    if(error) throw error;
+    return data||[];
+  }catch(e){ return []; }
+}
+function highlightsHtml(uid,isMe){
+  if(!profileHighlights.length&&!isMe)return '';
+  const cells=profileHighlights.map(h=>`<div class="hlcell" onclick="openHighlight('${h.id}')">
+      <div class="hlring">${h.cover_url?`<img src="${safeUrl(h.cover_url)}" alt="">`:`<span class="hlph">${icon('image',20)}</span>`}</div>
+      <div class="nm">${esc(h.title)}</div>
+    </div>`).join('');
+  const add=isMe?`<div class="hlcell" onclick="openHighlightCompose()">
+      <div class="hlring hladd">+</div><div class="nm">New</div></div>`:'';
+  return `<div class="hlrow">${cells}${add}</div>`;
+}
+async function openHighlightCompose(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='New highlight';
+  const body=$('listBody'); body.innerHTML=skRows(4);
+  try{
+    /* Every story ever posted, not just the live ones - the whole point is
+       to bring back something that has already expired. */
+    const {data,error}=await sb.from('stories').select('*').eq('author_id',me().id).order('created_at',{ascending:false}).limit(60);
+    if(error) throw error;
+    const rows=data||[];
+    if(!rows.length){ body.innerHTML='<div class="empty">Post a story first, then you can highlight it</div>'; return; }
+    body.innerHTML=`<div class="hlcompose">
+      <input class="field" id="hlTitle" placeholder="Highlight name" maxlength="40">
+      <div class="hlpick">${rows.map(r=>`<label class="hlopt"><input type="checkbox" value="${r.id}" data-cover="${esc(r.image_url||'')}"><img src="${safeUrl(r.image_url)}" alt=""><span class="hltick">${icon('check',16)}</span></label>`).join('')}</div>
+      <button class="btn grad" id="hlSave">Create highlight</button>
+    </div>`;
+    $('hlSave').onclick=saveHighlight;
+  }catch(e){ body.innerHTML='<div class="empty">Could not load your stories</div>'; }
+}
+async function saveHighlight(){
+  const title=($('hlTitle').value||'').trim();
+  const picked=[...document.querySelectorAll('.hlpick input:checked')];
+  if(!title){ toast('Give it a name'); return; }
+  if(!picked.length){ toast('Pick at least one story'); return; }
+  const btn=$('hlSave'); btn.disabled=true; btn.textContent='Creating…';
+  try{
+    const {data:h,error}=await sb.from('highlights')
+      .insert({owner_id:me().id,title,cover_url:picked[0].getAttribute('data-cover')||null})
+      .select().single();
+    if(error) throw error;
+    const items=picked.map((el,i)=>({highlight_id:h.id,story_id:el.value,position:i}));
+    const {error:e2}=await sb.from('highlight_items').insert(items);
+    if(e2) throw e2;
+    closeList(); toast('Highlight created'); loadProfile(me().id);
+  }catch(e){ toast('Could not create: '+sbErr(e)); btn.disabled=false; btn.textContent='Create highlight'; }
+}
+async function deleteHighlight(hid){
+  try{
+    const {error}=await sb.from('highlights').delete().eq('id',hid);
+    if(error) throw error;
+    closeStory(); toast('Highlight removed');
+  }catch(e){ toast('Delete failed: '+sbErr(e)); }
+}
+async function openHighlight(hid){
+  const h=profileHighlights.find(x=>x.id===hid); if(!h)return;
+  try{
+    const {data,error}=await sb.from('highlight_items').select('story_id,position').eq('highlight_id',hid).order('position');
+    if(error) throw error;
+    const ids=(data||[]).map(r=>r.story_id);
+    if(!ids.length){ toast('This highlight is empty'); return; }
+    const {data:rows}=await sb.from('stories').select('*').in('id',ids);
+    const byId={}; (rows||[]).forEach(r=>byId[r.id]=r);
+    svList=ids.map(i=>byId[i]).filter(Boolean);
+    if(!svList.length){ toast('This highlight is empty'); return; }
+    svUser=(await getUser(h.owner_id))||{username:'user',id:h.owner_id};
+    svIdx=0; svHighlight=h;
+    buildStoryView(); $('storyView').classList.add('on'); rearm(); playStory();
+  }catch(e){ toast('Could not open: '+sbErr(e)); }
+}
+let svHighlight=null;
 function openStory(uid,startIdx){
+  svHighlight=null;
   svList=(storyGroups[uid]||[]).slice(); if(!svList.length){toast('No active story');return;}
   svUser=storyUsers[uid]||{username:'user',id:uid};
   svIdx=(startIdx==null)?0:Math.max(0,Math.min(startIdx,svList.length-1));
   buildStoryView(); $('storyView').classList.add('on'); rearm(); playStory();
 }
 function adjStoryUser(dir){
+  if(svHighlight)return null;      // a highlight is a closed set, not a tray position
   if(!svUser)return null;
   const i=storyOrder.indexOf(svUser.id); if(i<0)return null;
   const j=i+dir; if(j<0||j>=storyOrder.length)return null;
@@ -2171,12 +2748,12 @@ function buildStoryView(){
   const bars=svList.map((_,i)=>`<div class="sbar"><i id="sbar_${i}"></i></div>`).join('');
   const x='<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   $('storyView').innerHTML=`<div class="sbars">${bars}</div>
-    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}</div><span class="sleft" id="svLeft"></span><button class="sclose" onclick="closeStory()">${x}</button></div>
+    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}${svHighlight?` <span class="hlname">· ${esc(svHighlight.title)}</span>`:''}</div><span class="sleft" id="svLeft"></span><button class="sclose" onclick="closeStory()">${x}</button></div>
     <div class="simg" id="svImg"></div>
     <div class="szones"><div onclick="prevStory()"></div><div onclick="nextStory()"></div></div>
     <div id="svTags" style="position:absolute;bottom:${svUser.id===me().id?'84px':'134px'};left:16px;right:80px;color:#fff;font-size:13px;z-index:3;text-shadow:0 1px 4px #000"></div>
-    ${svUser.id===me().id?`<div id="svSeen" onclick="openSeenList()" style="position:absolute;bottom:24px;left:16px;color:#fff;font-size:13px;z-index:3;cursor:pointer"></div><button id="svDel" class="btn" style="position:absolute;bottom:18px;right:16px;width:auto;padding:9px 20px;border-radius:22px;background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.25);z-index:3">Delete</button>`:`<div class="sreacts">${REACT_ORDER.map(k=>`<button class="sreactbtn" onclick="sReact('${k}')">${reactIcon(k,30)}</button>`).join('')}</div><div class="sreply"><input id="sReplyInput" placeholder="Reply to ${esc(svUser.username||'')}…" onfocus="clearTimeout(svTimer)" onkeydown="if(event.key==='Enter')sReply()"><button id="sLikeBtn" class="sheart" onclick="sLike()">${icon('heart',26)}</button></div>`}`;
-  const d=$('svDel'); if(d)d.onclick=delStory;
+    ${svUser.id===me().id?`<div id="svSeen" onclick="openSeenList()" style="position:absolute;bottom:24px;left:16px;color:#fff;font-size:13px;z-index:3;cursor:pointer"></div><button id="svDel" class="btn" style="position:absolute;bottom:18px;right:16px;width:auto;padding:9px 20px;border-radius:22px;background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.25);z-index:3">${svHighlight?'Remove':'Delete'}</button>`:`<div class="sreacts">${REACT_ORDER.map(k=>`<button class="sreactbtn" onclick="sReact('${k}')">${reactIcon(k,30)}</button>`).join('')}</div><div class="sreply"><input id="sReplyInput" placeholder="Reply to ${esc(svUser.username||'')}…" onfocus="clearTimeout(svTimer)" onkeydown="if(event.key==='Enter')sReply()"><button id="sLikeBtn" class="sheart" onclick="sLike()">${icon('heart',26)}</button></div>`}`;
+  const d=$('svDel'); if(d)d.onclick=()=>svHighlight?deleteHighlight(svHighlight.id):delStory();
 }
 function showStoryFrame(){
   const s=svList[svIdx]; if(!s)return;
@@ -2184,7 +2761,9 @@ function showStoryFrame(){
   svList.forEach((_,i)=>{const b=$('sbar_'+i);if(b){b.style.transition='none';b.style.width=i<svIdx?'100%':'0';}});
   const tg=$('svTags'); if(tg)tg.innerHTML=storyTagsLine(s.tags);
   const lf=$('svLeft');
-  if(lf){ const t=storyTimeLeft(s.created_at); lf.textContent=t?t.label:''; lf.classList.toggle('urgent',!!(t&&t.urgent)); }
+  /* "2h left" is meaningless on a highlight - the story already expired,
+     that is why it was highlighted. */
+  if(lf){ const t=svHighlight?null:storyTimeLeft(s.created_at); lf.textContent=t?t.label:''; lf.classList.toggle('urgent',!!(t&&t.urgent)); }
   if(svUser.id!==me().id){
     refreshStoryLike();
     if(!storyViewed.has(s.id)){ storyViewed.add(s.id); sb.from('story_views').upsert({story_id:s.id,viewer_id:me().id},{onConflict:'story_id,viewer_id',ignoreDuplicates:true}).then(()=>{}).catch(()=>{}); }
@@ -2367,6 +2946,11 @@ async function openForward(mid){
     body.innerHTML=(grpRows+userRows)||'<div class="empty">Start a chat or follow people to forward</div>';
   }catch(e){ body.innerHTML='<div class="empty">Could not load</div>'; }
 }
+async function downloadChatMedia(v){
+  const {data,error}=await sb.storage.from('chat').download(chatPath(v));
+  if(error) throw error;
+  return data;
+}
 async function doForwardTo(type,id){
   const mid=forwardMid; closeList(); if(!mid)return;
   let m=msgCache[mid];
@@ -2380,8 +2964,12 @@ async function doForwardTo(type,id){
     if(m.text)row.text=m.text;
     if(m.post_id)row.post_id=m.post_id;
     const folder=(type==='group'?id:convKey(me().id,id))+'/'+randPath();
-    if(m.image_url){ const b=await (await fetch(m.image_url)).blob(); row.image_url=await uploadFile('chat',folder+'.jpg',new File([b],'forward.jpg',{type:b.type||'image/jpeg'})); }
-    if(m.audio_url){ const b=await (await fetch(m.audio_url)).blob(); const ext=(b.type.indexOf('mp4')>=0)?'m4a':'webm'; row.audio_url=await uploadFile('chat',folder+'.'+ext,new File([b],'forward.'+ext,{type:b.type||'audio/webm'})); }
+    /* Re-uploaded into the destination conversation's own folder, so the
+       recipient is covered by the storage policy without widening it. The
+       source object is private now, so it comes back through the storage
+       API rather than a plain fetch of a public URL. */
+    if(m.image_url){ const b=await downloadChatMedia(m.image_url); row.image_url=await uploadFile('chat',folder+'.jpg',new File([b],'forward.jpg',{type:b.type||'image/jpeg'})); }
+    if(m.audio_url){ const b=await downloadChatMedia(m.audio_url); const ext=(b.type.indexOf('mp4')>=0)?'m4a':'webm'; row.audio_url=await uploadFile('chat',folder+'.'+ext,new File([b],'forward.'+ext,{type:b.type||'audio/webm'})); }
     const {error}=await sb.from('messages').insert(row);
     if(error) throw error;
     toast('Forwarded');
@@ -2497,10 +3085,11 @@ async function openNotif(){
     else{
       const actorIds=[...new Set(items.map(n=>n.actor_id))]; const users={};
       await Promise.all(actorIds.map(async id=>{users[id]=await getUser(id);}));
-      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you'};
+      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you',followreq:'wants to follow you'};
       body.innerHTML=items.map(n=>{
         const u=users[n.actor_id]||{username:'someone'};
-        const openAction=n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
+        const openAction=n.type==='followreq'?'openFollowRequests()'
+          :n.post_id?`openPostView('${n.post_id}')`:`openProfile('${n.actor_id}')`;
         /* Digests and recaps come from the official account and read as a
            whole sentence already - prefixing them with "linkup" would be
            wrong, so they render as plain text. */
@@ -2641,7 +3230,7 @@ async function openChat(uid){
     const {data:msgs,error}=await sb.from('messages').select('*').eq('conversation',key).is('group_id',null).order('created_at');
     if(error) throw error;
     body.innerHTML=(msgs||[]).map(bubble).join('');
-    hydrateCards(body);
+    hydrateCards(body); hydrateChatMedia(body);
     body.scrollTop=body.scrollHeight;
     markRead((msgs||[]).filter(m=>m.receiver_id===me().id&&!m.read));
   }catch(e){body.innerHTML='<div class="empty">Could not load messages</div>';}
@@ -2681,14 +3270,14 @@ function bubble(m){
   const sender=su?`<div class="bsender">${esc(su.username||su.name||'user')}</div>`:'';
   let reply='';
   if(m.reply_to_id&&m.reply_meta){ const r=parseRx(m.reply_meta); reply=`<div class="rquote" onclick="event.stopPropagation();jumpToMsg('${m.reply_to_id}')"><span class="rqu">${esc(r.u||'')}</span><span class="rqt">${esc(r.t||'')}</span></div>`; }
-  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" src="${safeUrl(m.image_url)}" onload="this.classList.add('loaded')" onclick="window.open(this.src,'_blank')">`:'';
+  const img=m.image_url?`<img class="blur-load" loading="lazy" decoding="async" data-cmedia="${esc(chatPath(m.image_url))}" alt="" onload="this.classList.add('loaded')" onclick="if(this.src)window.open(this.src,'_blank')">`:'';
   const card=m.post_id?`<div class="pcard" data-post="${m.post_id}" data-mid="${m.id}" onclick="openPostView('${m.post_id}')"><span class="pcimg" id="pcimg_${m.id}"></span><span>View post</span></div>`:'';
   const txt=m.text?esc(m.text):'';
-  const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" src="${safeUrl(m.audio_url)}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
+  const voice=m.audio_url?`<div class="voice${mine&&!grp&&m.played?' played':''}" data-mid="${m.id}"><button class="vplay" onclick="vtoggle(this)">${PLAY_SVG}</button><div class="vbar" onclick="vseek(event,this)"><div class="vfill"></div></div><span class="vtime">0:00</span><audio preload="metadata" data-cmedia="${esc(chatPath(m.audio_url))}" onloadedmetadata="vmeta(this)" ontimeupdate="vprog(this)" onended="vend(this)"></audio></div>`:'';
   const seen=(mine&&!grp)?`<span class="seen ${m.read?'on':''}">${icon(m.read?'checks':'check',14)}</span>`:'';
   return `<div class="bub ${mine?'me':'them'}" id="m_${m.id}">${sender}${reply}${txt}${img}${voice}${card}<div class="btime">${timeAgo(m.created_at)}${seen}</div>${reactionsHtml(m.id,m.reactions)}</div>`;
 }
-function appendBubble(m){const b=$('chatBody');b.insertAdjacentHTML('beforeend',bubble(m));hydrateCards(b);b.scrollTop=b.scrollHeight;}
+function appendBubble(m){const b=$('chatBody');b.insertAdjacentHTML('beforeend',bubble(m));hydrateCards(b);hydrateChatMedia(b);b.scrollTop=b.scrollHeight;}
 function closeChat(){ if(mediaRec||recStream)cancelRec(); cleanupPresence(); cancelReply(); closeChatSearch(); $('chat').style.display='none'; chatUser=null; chatGroup=null; clearChatImg(); if(currentScreen==='Chats')loadChats(); }
 let csMatches=[], csIdx=-1;
 function toggleChatSearch(){ const bar=$('chatSearchBar'); if(bar.style.display==='flex'){ closeChatSearch(); } else { bar.style.display='flex'; rearm(); const i=$('chatSearchMsg'); i.value=''; $('csCount').textContent=''; setTimeout(()=>i.focus(),30); } }
@@ -2958,8 +3547,8 @@ function subscribeRealtime(){
       await saveSessionToIDB(session);
       const ok=await loadMyProfile(session.user.id,session.user.email);
       if(ok) enterApp(); else { await sb.auth.signOut(); setAuthMode(false); }
-    } else { setAuthMode(false); }
-  }catch(e){ setAuthMode(false); }
+    } else { setAuthMode(false); showInviteContext(); }
+  }catch(e){ setAuthMode(false); showInviteContext(); }
   sb.auth.onAuthStateChange((event,session)=>{
     if(event==='SIGNED_OUT'){ myProfile=null; clearSessionFromIDB(); }
     else if(session){ saveSessionToIDB(session); }

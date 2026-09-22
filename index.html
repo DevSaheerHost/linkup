@@ -32,7 +32,7 @@
 <meta name="twitter:title" content="LinkUp">
 <meta name="twitter:description" content="Share moments, chat, and call your friends on LinkUp.">
 <meta name="twitter:image" content="https://debian.taile6f55d.ts.net/og.png">
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=18">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
@@ -41,6 +41,7 @@
 <div id="auth">
   <div class="authcard">
     <div class="logo">LinkUp</div>
+    <div class="invitedby" id="invitedBy"></div>
     <div class="sub" id="authSub">Sign in to continue</div>
     <div class="err" id="authErr"></div>
     <div id="signupExtra" style="display:none">
@@ -82,6 +83,10 @@
       </div>
       <div class="audhint" id="audHint"></div>
       <button class="btn grad" id="shareBtn">Share</button>
+      <div class="laterrow">
+        <button class="btn" id="draftBtn">Save draft</button>
+        <button class="btn" id="scheduleBtn">Schedule</button>
+      </div>
       <button class="btn" onclick="openPollCompose()" style="background:var(--soft);margin-top:8px">Create a poll instead</button>
     </section>
     <section class="screen" id="sChats"></section>
@@ -226,6 +231,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=30"></script>
+<script src="app.js?v=39"></script>
 </body>
 </html>

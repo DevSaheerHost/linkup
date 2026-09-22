@@ -40,8 +40,15 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     route.fulfill({ status: 200, contentType: 'application/javascript', body: fs.readFileSync(SUPABASE_JS_LOCAL_PATH) })
   );
 
+  /* Content-Range carries the row count for select(..., {count:'exact'}),
+     and it is not a CORS-safelisted response header - without
+     Access-Control-Expose-Headers the browser hides it from the page and
+     every count in the app reads back as null. The real API sends this;
+     the mock has to as well or no count is ever testable. */
+  const EXPOSE = { 'Access-Control-Expose-Headers': 'Content-Range, Content-Profile' };
+
   const json = (route, body, status = 200, extraHeaders = {}) =>
-    route.fulfill({ status, contentType: 'application/json', headers: { 'Content-Range': '0-0/0', ...extraHeaders }, body: JSON.stringify(body) });
+    route.fulfill({ status, contentType: 'application/json', headers: { 'Content-Range': '0-0/0', ...EXPOSE, ...extraHeaders }, body: JSON.stringify(body) });
 
   await page.route(`${PROJECT_URL}/rest/v1/**`, async (route) => {
     const req = route.request();
@@ -61,10 +68,25 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
       ? rows.filter((r) => r && r.id === idFilter.slice(3))
       : rows;
 
+    /* An insert with .select() asks PostgREST to return what it wrote.
+       Without echoing it back, any code that reads the new row's id - and
+       then writes something referencing it - silently gets null and stops,
+       which looks like a bug in the app rather than in the mock. */
+    if (req.method() === 'POST' && (req.headers()['prefer'] || '').includes('return=representation')) {
+      let sent = [];
+      try { sent = JSON.parse(req.postData() || '[]'); } catch (_) { sent = []; }
+      const list = (Array.isArray(sent) ? sent : [sent]).map((row, i) => ({
+        id: row.id || `mock-${table}-${i}`,
+        created_at: new Date().toISOString(),
+        ...row,
+      }));
+      return json(route, isSingle ? (list[0] || null) : list, 201);
+    }
+
     if (tables[table] !== undefined) {
       const rows = byId(tables[table]);
       if (req.method() === 'HEAD') {
-        return route.fulfill({ status: 200, headers: { 'Content-Range': `0-0/${rows.length}` }, body: '' });
+        return route.fulfill({ status: 200, headers: { 'Content-Range': `0-${Math.max(0, rows.length - 1)}/${rows.length}`, ...EXPOSE }, body: '' });
       }
       return json(route, isSingle ? (rows[0] || null) : rows);
     }
@@ -74,8 +96,16 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     }
     // Unhandled table: default to empty, so incidental boot-time fetches
     // (notifications, groups, blocks, close friends, etc.) don't error.
-    if (req.method() === 'HEAD') return route.fulfill({ status: 200, headers: { 'Content-Range': '0-0/0' }, body: '' });
+    if (req.method() === 'HEAD') return route.fulfill({ status: 200, headers: { 'Content-Range': '*/0', ...EXPOSE }, body: '' });
     return json(route, isSingle ? null : []);
+  });
+
+  /* Private-bucket media is fetched through a signed URL, so the storage
+     sign endpoint has to answer for chat photos/voice notes to render. */
+  await page.route(`${PROJECT_URL}/storage/v1/object/sign/**`, async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    const paths = body.paths || (body.path ? [body.path] : []);
+    return json(route, paths.map((p) => ({ path: p, signedURL: `/storage/v1/object/sign/chat/${p}?token=test`, error: null })));
   });
 
   await page.route(`${PROJECT_URL}/auth/v1/**`, (route) => json(route, { user: session.user }));

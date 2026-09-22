@@ -79,6 +79,7 @@ function messageFor(n: { type: string; text?: string }, actorName?: string | nul
     case 'reply': return { title: who, body: 'replied: ' + (n.text || '') };
     case 'commentlike': return { title: 'LinkUp', body: who + ' liked your comment' };
     case 'follow': return { title: 'LinkUp', body: who + ' started following you' };
+    case 'followreq': return { title: 'LinkUp', body: who + ' wants to follow you' };
     case 'tag': return { title: 'LinkUp', body: who + ' tagged you in a post' };
     case 'storylike': return { title: 'LinkUp', body: who + ' liked your story' };
     // Digests/recaps are attributed to the official account, so the actor's
