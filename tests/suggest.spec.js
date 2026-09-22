@@ -28,21 +28,21 @@ test('the rail shows each suggestion with the reason it was made', async ({ page
   await boot(page, [S(A, 'follows_me', 'Follows you'), S(B, 'locked', 'Popular on LinkUp', true)]);
   await page.evaluate(() => window.renderSuggestRail());
 
-  await expect(page.locator('#suggestRail .sgcard')).toHaveCount(2, { timeout: 10000 });
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)')).toHaveCount(2, { timeout: 10000 });
   await expect(page.locator('#suggestRail .sghead')).toHaveText('Suggested for you');
-  await expect(page.locator('#suggestRail .sgcard').nth(0).locator('.sgwhy')).toHaveText('Follows you');
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)').nth(0).locator('.sgwhy')).toHaveText('Follows you');
   // A private suggestion has to ask, not follow.
-  await expect(page.locator('#suggestRail .sgcard').nth(0).locator('.sgfollow')).toHaveText('Follow');
-  await expect(page.locator('#suggestRail .sgcard').nth(1).locator('.sgfollow')).toHaveText('Request');
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)').nth(0).locator('.sgfollow')).toHaveText('Follow');
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)').nth(1).locator('.sgfollow')).toHaveText('Request');
 });
 
 test('the rail stays out of Following, which is a feed you chose', async ({ page }) => {
   await boot(page, [S(A, 'follows_me', 'Follows you')]);
   await page.evaluate(() => window.setFeedMode('following'));
-  await expect(page.locator('#suggestRail .sgcard')).toHaveCount(0);
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)')).toHaveCount(0);
 
   await page.evaluate(() => window.setFeedMode('all'));
-  await expect(page.locator('#suggestRail .sgcard')).toHaveCount(1, { timeout: 10000 });
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)')).toHaveCount(1, { timeout: 10000 });
 });
 
 test('dismissing records it so the person stops coming back', async ({ page }) => {
@@ -52,15 +52,19 @@ test('dismissing records it so the person stops coming back', async ({ page }) =
     if (r.method() === 'POST' && r.url().includes('/rest/v1/suggestion_dismissals')) writes.push(r.postData());
   });
   await page.evaluate(() => window.renderSuggestRail());
-  await expect(page.locator('#suggestRail .sgcard')).toHaveCount(1, { timeout: 10000 });
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)')).toHaveCount(1, { timeout: 10000 });
   await page.locator('#suggestRail .sgx').click();
 
   await expect.poll(() => writes.length).toBeGreaterThan(0);
   expect(JSON.parse(writes[0]).dismissed_id).toBe(A);
 });
 
-test('nothing to suggest renders nothing at all, not an empty heading', async ({ page }) => {
+test('with nobody to suggest, the rail falls back to the invite card', async ({ page }) => {
   await boot(page, []);
   await page.evaluate(() => window.renderSuggestRail());
-  await expect(page.locator('#suggestRail')).toBeEmpty();
+  // Running out of people is the normal case on a small instance, so the
+  // rail offers a way to bring someone in rather than going blank.
+  await expect(page.locator('#suggestRail .sgcard:not(.sginvite)')).toHaveCount(0);
+  await expect(page.locator('#suggestRail .sginvite')).toHaveCount(1);
+  await expect(page.locator('#suggestRail .sghead')).toHaveText('Grow your feed');
 });

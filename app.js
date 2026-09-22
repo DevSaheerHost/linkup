@@ -314,6 +314,30 @@ function enterApp(){
   rearm();
   handleDeepLinkHash();
 }
+/* A shared profile link lands a stranger on a bare login box with no idea
+   who sent them or what this is. The hash survives sign-up untouched, so
+   handleDeepLinkHash() still opens the right profile afterwards - this is
+   only about giving them a reason to get that far.
+
+   The inviter is read through invite_preview(), a narrow definer RPC: the
+   profiles table is authenticated-only and should stay that way, so the
+   public surface here is exactly the four fields a profile card shows, for
+   a username the visitor already has. */
+async function showInviteContext(){
+  const box=$('invitedBy'); if(!box)return;
+  box.innerHTML='';
+  const m=(location.hash||'').match(/[#&]u=([^&]+)/);
+  if(!m)return;
+  let name;
+  try{ name=decodeURIComponent(m[1]); }catch(_){ return; }
+  try{
+    const {data,error}=await sb.rpc('invite_preview',{p_username:name});
+    if(error) throw error;
+    const u=(data||[])[0]; if(!u)return;
+    box.innerHTML=`${avatarHtml(u,54)}<div class="ibtxt"><b>@${esc(u.username)}${vbadge(u)}</b><span>invited you to LinkUp</span></div>`;
+    $('authSub').textContent='Create an account to follow them';
+  }catch(e){ /* a failed preview just means the plain login card */ }
+}
 /* Runs once at boot (above) AND on hashchange below - a notification's
    Answer action navigates an already-open-but-backgrounded tab's hash
    rather than reloading it, so parsing this only at startup would miss it. */
@@ -480,10 +504,26 @@ async function renderSuggestRail(){
   /* Following is a feed of people you chose; suggestions belong on For You
      and on Search, not in the middle of that. */
   if(feedMode!=='all')return;
+  const mode=feedMode;
   const people=await loadSuggestions(10);
+  /* The fetch is in flight for as long as it takes; tapping Following
+     during it would otherwise drop a stale rail into a feed that should
+     never show one. */
+  if(!me()||feedMode!==mode)return;
   suggestCache=people;
-  if(!people.length)return;
-  host.innerHTML=`<div class="sghead">Suggested for you</div><div class="sgrow">${people.map(suggestCardHtml).join('')}</div>`;
+  /* The invite card is always last, and is the whole rail when there is
+     nobody left to suggest - on an instance this small, running out of
+     people is the normal case, and "nothing here" is a dead end. */
+  host.innerHTML=`<div class="sghead">${people.length?'Suggested for you':'Grow your feed'}</div>`
+    +`<div class="sgrow">${people.map(suggestCardHtml).join('')}${inviteCardHtml()}</div>`;
+}
+function inviteCardHtml(){
+  return `<div class="sgcard sginvite" onclick="shareMyLink()">
+    <div class="sgicon">${icon('send',26)}</div>
+    <div class="sgname">Invite a friend</div>
+    <div class="sgwhy">Share your profile link</div>
+    <button class="sgfollow" onclick="event.stopPropagation();shareMyLink()">Share</button>
+  </div>`;
 }
 async function dismissSuggestion(uid){
   const card=document.querySelector(`.sgcard [onclick*="${uid}"]`);
@@ -497,10 +537,11 @@ async function renderMissedStrip(){
   const host=$('missedStrip'); if(!host)return;
   host.innerHTML='';
   if(feedMode!=='all')return;
+  const mode=feedMode;
   try{
     const {data,error}=await sb.rpc('get_missed_posts',{page_size:3});
     if(error) throw error;
-    const rows=data||[]; if(!rows.length)return;
+    const rows=data||[]; if(!rows.length||feedMode!==mode)return;   // same race as the rail
     const authorIds=[...new Set(rows.map(p=>p.author_id))];
     const {data:authors}=await sb.from('profiles').select('id,username,name,avatar_url,is_verified').in('id',authorIds);
     const aMap={}; (authors||[]).forEach(a=>aMap[a.id]=a);
@@ -964,8 +1005,9 @@ async function openQR(){
 function closeQR(){ $('qr').classList.remove('on'); }
 function shareMyLink(){
   const link=myProfileLink();
-  if(navigator.share){ navigator.share({title:'LinkUp',text:'Find me on LinkUp: @'+me().username,url:link}).catch(()=>{}); return; }
-  try{ navigator.clipboard.writeText(link); toast('Link copied'); }catch(e){ toast(link); }
+  const text='Join me on LinkUp — I\u2019m @'+me().username;
+  if(navigator.share){ navigator.share({title:'LinkUp',text,url:link}).catch(()=>{}); return; }
+  try{ navigator.clipboard.writeText(link); toast('Invite link copied'); }catch(e){ toast(link); }
 }
 
 /* ============ POST VIEWS ============ */
@@ -3200,8 +3242,8 @@ function subscribeRealtime(){
       await saveSessionToIDB(session);
       const ok=await loadMyProfile(session.user.id,session.user.email);
       if(ok) enterApp(); else { await sb.auth.signOut(); setAuthMode(false); }
-    } else { setAuthMode(false); }
-  }catch(e){ setAuthMode(false); }
+    } else { setAuthMode(false); showInviteContext(); }
+  }catch(e){ setAuthMode(false); showInviteContext(); }
   sb.auth.onAuthStateChange((event,session)=>{
     if(event==='SIGNED_OUT'){ myProfile=null; clearSessionFromIDB(); }
     else if(session){ saveSessionToIDB(session); }
