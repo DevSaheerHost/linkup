@@ -119,6 +119,9 @@ const PATHS={
   reels:'<rect x="3" y="4" width="18" height="16" rx="4"/><path d="M10.2 8.4l5.2 3.6-5.2 3.6z" fill="currentColor" stroke="none"/>',
   message:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
   lock:'<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>',
+  moon:'<path d="M20 13.5A8.2 8.2 0 0 1 10.5 4a8.2 8.2 0 1 0 9.5 9.5z"/>',
+  contrast:'<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/>',
   comment:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
   heart:'<path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1L12 21l8.8-8.4a5 5 0 0 0 0-7z"/>',
   attach:'<path d="M20.5 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.5 1.5 0 0 1-2.2-2.1l7.8-7.8"/>',
@@ -1930,6 +1933,12 @@ function openEdit(){
     <input type="file" id="editAvFile" accept="image/*" style="display:none">
     <input class="field" id="editName" placeholder="Display name" value="${esc(u.name||'')}">
     <textarea id="editBio" rows="3" placeholder="Bio">${esc(u.bio||'')}</textarea>
+    <div class="slabel" style="padding:2px 0 8px">Appearance</div>
+    <div class="themerow">
+      ${[['system','Auto','contrast'],['light','Light','sun'],['dark','Dark','moon']].map(([v,label,ic])=>
+        `<button class="themebtn${themePref()===v?' on':''}" onclick="setTheme('${v}')">${icon(ic,19)}<span>${label}</span></button>`
+      ).join('')}
+    </div>
     <label class="togrow" for="editPrivate">
       <span><b>Private account</b><i>Only people you approve can see your posts and stories.</i></span>
       <input type="checkbox" id="editPrivate" ${u.is_private?'checked':''}>
@@ -1987,6 +1996,41 @@ function openChangePw(){
 }
 
 /* ================= CHATS LIST ================= */
+/* ---- theme ----
+   A device preference, not a profile field: which theme suits you depends
+   on the screen you are looking at, so syncing it across devices would be
+   wrong. The inline script in <head> applies it before first paint; this
+   is the same resolution, for when it changes at runtime. */
+const THEME_KEY='linkup_theme';
+const THEME_COLORS={dark:'#7c5cff',light:'#ffffff'};
+function themePref(){ try{ return localStorage.getItem(THEME_KEY)||'system'; }catch(e){ return 'system'; } }
+function resolveTheme(pref){
+  if(pref==='light'||pref==='dark')return pref;
+  return (window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark';
+}
+function applyTheme(){
+  const t=resolveTheme(themePref());
+  document.documentElement.setAttribute('data-theme',t);
+  /* The browser paints its own chrome from this, so leaving it on the dark
+     accent would put a purple bar above a white app. */
+  const m=document.querySelector('meta[name="theme-color"]');
+  if(m)m.setAttribute('content',THEME_COLORS[t]);
+}
+function setTheme(pref){
+  try{ localStorage.setItem(THEME_KEY,pref); }catch(e){}
+  applyTheme();
+  /* Re-render the settings screen so the selected chip moves. */
+  if(currentScreen==='Profile'&&$('editPrivate'))openEdit();
+}
+/* Following the system means following it as it changes - at sunset, or
+   when the OS switches on a schedule - not only at launch. */
+if(window.matchMedia){
+  const mq=window.matchMedia('(prefers-color-scheme: light)');
+  const onChange=()=>{ if(themePref()==='system')applyTheme(); };
+  if(mq.addEventListener)mq.addEventListener('change',onChange);
+  else if(mq.addListener)mq.addListener(onChange);
+}
+applyTheme();
 function getLSset(k){ try{ return new Set(JSON.parse(localStorage.getItem(k)||'[]')); }catch(e){ return new Set(); } }
 function setLSset(k,s){ try{ localStorage.setItem(k,JSON.stringify([...s])); }catch(e){} }
 function getPinned(){ return getLSset('linkup_pinned'); }
