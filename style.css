@@ -478,3 +478,12 @@
   .sgcard.sginvite{justify-content:center;border-style:dashed}
   .sgicon{width:62px;height:62px;border-radius:50%;display:flex;align-items:center;justify-content:center;
           background:var(--soft);color:var(--accent);flex:none}
+
+  /* ---- moderation queue ---- */
+  .rprow{align-items:flex-start;cursor:default}
+  .rprow .last .nm{font-weight:500;font-size:13.5px;margin-bottom:2px}
+  .rprow .snip{white-space:normal;line-height:1.4}
+  .rpwhen{color:var(--mut);font-size:11.5px;margin-top:3px}
+  .rprow .reqbtns{flex-direction:column;gap:5px;min-width:96px}
+  .rprow .reqbtns button{width:100%}
+  .rprow .reqbtns button.danger{color:#ff6b6b;border-color:rgba(255,107,107,.35)}

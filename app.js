@@ -309,7 +309,7 @@ function enterApp(){
   applyStaticIcons();
   $('navAv').outerHTML=avatarHtml(me(),26,'nav-av').replace('class="av','id="navAv" class="av');
   if(!subbed){subscribeRealtime();subscribeCalls();subscribeGroupSig();subscribeGroupCalls();subscribePollVotes();subbed=true;}
-  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadMutes(); loadCloseFriends(); loadFollowing(); loadRequested(); touchOpenStreak();
+  refreshUnread(); startHeartbeat(); refreshNotif(); initPush(); loadMyGroups(); loadBlocks(); loadMutes(); loadCloseFriends(); loadFollowing(); loadRequested(); refreshModeration(); touchOpenStreak();
   show('Feed');
   rearm();
   handleDeepLinkHash();
@@ -1177,9 +1177,72 @@ async function toggleBlock(uid,fromProfile){
 }
 function reportTarget(kind,target){
   openTextEditor('Report '+(kind==='post'?'post':'user'),'',async reason=>{
-    try{ await sb.from('reports').insert({reporter_id:me().id,kind:kind,target_id:target,reason:(reason||'').slice(0,500)}); toast('Report submitted. Thank you.'); }
+    try{ await sb.from('reports').insert({reporter_id:me().id,kind:kind,target_id:target,reason:(reason||'').slice(0,500)}); toast('Report sent to moderators.'); }
     catch(e){ toast('Report failed: '+sbErr(e)); }
   });
+}
+/* ---- moderation queue ----
+   The report button used to write a row into a table nobody could read.
+   The official account is a moderator; for everyone else none of this
+   renders, and the RPCs refuse them anyway. */
+let iAmModerator=false, openReportCount=0;
+async function refreshModeration(){
+  iAmModerator=!!(me()&&me().is_moderator);
+  openReportCount=0;
+  if(!iAmModerator)return;
+  try{
+    const {count}=await sb.from('reports').select('id',{count:'exact',head:true}).eq('status','open');
+    openReportCount=count||0;
+  }catch(e){ console.warn('MODPROBE',e&&e.message); }
+}
+async function openReports(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='Reports';
+  const body=$('listBody'); body.innerHTML=skRows(5);
+  try{
+    const {data,error}=await sb.from('reports').select('*').eq('status','open').order('created_at',{ascending:false}).limit(50);
+    if(error) throw error;
+    const rows=data||[];
+    if(!rows.length){ body.innerHTML='<div class="empty">Nothing to review</div>'; openReportCount=0; return; }
+    const who={};
+    await Promise.all([...new Set(rows.map(r=>r.reporter_id))].map(async id=>{who[id]=await getUser(id);}));
+    body.innerHTML=rows.map(r=>{
+      const rep=who[r.reporter_id]||{username:'someone'};
+      /* A post report opens the post so the moderator sees what was
+         reported before deciding; a user report opens the profile. */
+      const open=r.kind==='post'?`openPostView('${r.target_id}')`:`openProfile('${r.target_id}')`;
+      const remove=r.kind==='post'
+        ? `<button class="danger" onclick="event.stopPropagation();removeReportedPost('${r.target_id}')">Remove post</button>`
+        : '';
+      return `<div class="row rprow">
+        <div class="last">
+          <div class="nm">${r.kind==='post'?'Post':'User'} reported by <b>${esc(rep.username)}</b></div>
+          <div class="snip">${esc(r.reason||'No reason given')}</div>
+          <div class="rpwhen">${timeAgo(r.created_at)}</div>
+        </div>
+        <div class="reqbtns">
+          <button onclick="event.stopPropagation();closeList();${open}">View</button>
+          ${remove}
+          <button onclick="event.stopPropagation();resolveReport('${r.id}','dismissed')">Dismiss</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="empty">Could not load reports</div>'; }
+}
+async function resolveReport(id,status){
+  try{
+    const {error}=await sb.rpc('resolve_report',{p_report_id:id,p_status:status,p_resolution:null});
+    if(error) throw error;
+    toast(status==='dismissed'?'Dismissed':'Marked actioned');
+    await refreshModeration(); openReports();
+  }catch(e){ toast('Failed: '+sbErr(e)); }
+}
+async function removeReportedPost(pid){
+  try{
+    const {error}=await sb.rpc('moderator_remove_post',{p_post_id:pid,p_resolution:'Post removed by a moderator'});
+    if(error) throw error;
+    toast('Post removed');
+    await refreshModeration(); openReports();
+  }catch(e){ toast('Remove failed: '+sbErr(e)); }
 }
 function closeActMenu(){ $('actMenuWrap').classList.remove('on'); }
 $('actMenuWrap').onclick=e=>{ if(e.target.id==='actMenuWrap')closeActMenu(); };
@@ -1643,7 +1706,7 @@ async function loadProfile(uid){
   $('main').classList.remove('reels');
   try{
     const isMe=uid===me().id;
-    if(isMe)await refreshFollowRequests(); else await loadRequested();
+    if(isMe){ await refreshFollowRequests(); await refreshModeration(); } else await loadRequested();
     /* getUser caches, and is_private may have just been toggled on the
        profile being opened, so read a fresh row for someone else's page. */
     const u=isMe?me():await getUser(uid,true);
@@ -1666,7 +1729,7 @@ async function loadProfile(uid){
       :locked?`<div class="locked">${icon('lock',30)}<div class="lktitle">This account is private</div><div class="lksub">Follow to see their photos and videos.</div></div>`
       :(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts yet</div>');
     const btns=isMe
-      ?`<button onclick="openEdit()">Edit profile</button>${u.is_private?`<button onclick="openFollowRequests()">Requests${pendingReqCount?` <b>${pendingReqCount}</b>`:''}</button>`:''}<button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
+      ?`<button onclick="openEdit()">Edit profile</button>${u.is_private?`<button onclick="openFollowRequests()">Requests${pendingReqCount?` <b>${pendingReqCount}</b>`:''}</button>`:''}${iAmModerator?`<button onclick="openReports()">Reports${openReportCount?` <b>${openReportCount}</b>`:''}</button>`:''}<button onclick="openSaved()">Saved</button><button onclick="openQR()">My QR</button><button onclick="enablePush()">Enable alerts</button><button onclick="logout()">Log out</button>`
       :(blocked
         ?`<button class="grad" style="color:#fff" onclick="toggleBlock('${uid}',true)">Unblock</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`
         :`${followMainBtn(uid,u,followId)}<button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);

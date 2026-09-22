@@ -40,8 +40,15 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     route.fulfill({ status: 200, contentType: 'application/javascript', body: fs.readFileSync(SUPABASE_JS_LOCAL_PATH) })
   );
 
+  /* Content-Range carries the row count for select(..., {count:'exact'}),
+     and it is not a CORS-safelisted response header - without
+     Access-Control-Expose-Headers the browser hides it from the page and
+     every count in the app reads back as null. The real API sends this;
+     the mock has to as well or no count is ever testable. */
+  const EXPOSE = { 'Access-Control-Expose-Headers': 'Content-Range, Content-Profile' };
+
   const json = (route, body, status = 200, extraHeaders = {}) =>
-    route.fulfill({ status, contentType: 'application/json', headers: { 'Content-Range': '0-0/0', ...extraHeaders }, body: JSON.stringify(body) });
+    route.fulfill({ status, contentType: 'application/json', headers: { 'Content-Range': '0-0/0', ...EXPOSE, ...extraHeaders }, body: JSON.stringify(body) });
 
   await page.route(`${PROJECT_URL}/rest/v1/**`, async (route) => {
     const req = route.request();
@@ -64,7 +71,7 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     if (tables[table] !== undefined) {
       const rows = byId(tables[table]);
       if (req.method() === 'HEAD') {
-        return route.fulfill({ status: 200, headers: { 'Content-Range': `0-0/${rows.length}` }, body: '' });
+        return route.fulfill({ status: 200, headers: { 'Content-Range': `0-${Math.max(0, rows.length - 1)}/${rows.length}`, ...EXPOSE }, body: '' });
       }
       return json(route, isSingle ? (rows[0] || null) : rows);
     }
@@ -74,7 +81,7 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
     }
     // Unhandled table: default to empty, so incidental boot-time fetches
     // (notifications, groups, blocks, close friends, etc.) don't error.
-    if (req.method() === 'HEAD') return route.fulfill({ status: 200, headers: { 'Content-Range': '0-0/0' }, body: '' });
+    if (req.method() === 'HEAD') return route.fulfill({ status: 200, headers: { 'Content-Range': '*/0', ...EXPOSE }, body: '' });
     return json(route, isSingle ? null : []);
   });
 
