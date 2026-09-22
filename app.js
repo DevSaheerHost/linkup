@@ -969,18 +969,87 @@ async function toggleSave(pid){
     else{ saveState[pid]='tmp'; if(el){el.classList.add('saved');el.innerHTML=icon('bookmark',26,{fill:'currentColor'});} const {data:r}=await sb.from('saves').insert({post_id:pid,user_id:me().id}).select().single(); saveState[pid]=r.id; toast('Saved'); }
   }catch(e){ saveState[pid]=cur||null; if(el){el.classList.toggle('saved',!!saveState[pid]);el.innerHTML=icon('bookmark',26,{fill:saveState[pid]?'currentColor':'none'});} toast('Save failed: '+sbErr(e)); }
 }
-async function openSaved(){
+/* Saves were a flat list, which becomes a graveyard past one screenful.
+   A post can sit in several collections or none - "All" is simply
+   everything you saved, not a collection row. */
+let savedCollection=null, myCollections=[];
+async function openSaved(collectionId){
   $('saved').classList.add('on'); rearm();
+  savedCollection=collectionId||null;
   const body=$('savedBody');
   body.innerHTML='<div style="padding:30px;text-align:center;color:var(--mut)">Loading...</div>';
   try{
-    const {data:rows,error}=await sb.from('saves').select('post_id').eq('user_id',me().id).order('created_at',{ascending:false});
+    const [{data:saves,error},cols]=await Promise.all([
+      sb.from('saves').select('post_id').eq('user_id',me().id).order('created_at',{ascending:false}),
+      loadCollections()
+    ]);
     if(error) throw error;
-    if(!rows.length){ body.innerHTML='<div class="empty">No saved posts yet</div>'; return; }
+    myCollections=cols;
+
+    let ids=(saves||[]).map(r=>r.post_id);
+    if(savedCollection){
+      const {data:items}=await sb.from('collection_items').select('post_id').eq('collection_id',savedCollection).order('added_at',{ascending:false});
+      ids=(items||[]).map(r=>r.post_id);
+    }
+    const tabs=collectionTabsHtml();
+    if(!ids.length){ body.innerHTML=tabs+'<div class="empty">'+(savedCollection?'Nothing in this collection yet':'No saved posts yet')+'</div>'; return; }
     const posts=[];
-    for(const r of rows){ const p=await getPost(r.post_id); if(p) posts.push(p); }
-    body.innerHTML=posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No saved posts yet</div>';
+    for(const id of ids){ const p=await getPost(id); if(p) posts.push(p); }
+    body.innerHTML=tabs+(posts.length?`<div class="grid">${posts.map(savedCell).join('')}</div>`:'<div class="empty">Nothing here yet</div>');
   }catch(e){ body.innerHTML='<div class="empty">Could not load saved posts<br><span style="font-size:12px;opacity:.7">'+esc(sbErr(e))+'</span></div>'; }
+}
+/* Same cell as everywhere else, plus a long-press-free way to file it. */
+function savedCell(p){
+  return `<div class="savedwrap">${gridCell(p)}<button class="savedfile" title="Add to collection" onclick="event.stopPropagation();openCollectionPicker('${p.id}')">${icon('plus',15)}</button></div>`;
+}
+async function loadCollections(){
+  try{
+    const {data,error}=await sb.from('collections').select('*').eq('owner_id',me().id).order('name');
+    if(error) throw error;
+    return data||[];
+  }catch(e){ return []; }
+}
+function collectionTabsHtml(){
+  const chip=(id,label)=>`<button class="ctab${savedCollection===id?' on':''}" onclick="openSaved(${id?`'${id}'`:''})">${esc(label)}</button>`;
+  return `<div class="ctabs">${chip(null,'All')}${myCollections.map(c=>chip(c.id,c.name)).join('')}
+    <button class="ctab cnew" onclick="newCollection()">+ New</button></div>`;
+}
+async function newCollection(){
+  openTextEditor('New collection','',async name=>{
+    name=(name||'').trim();
+    if(!name)return;
+    try{
+      const {error}=await sb.from('collections').insert({owner_id:me().id,name});
+      if(error) throw error;
+      openSaved(savedCollection);
+    }catch(e){ toast(/duplicate|unique/i.test(sbErr(e))?'You already have a collection with that name':'Could not create: '+sbErr(e)); }
+  });
+}
+async function openCollectionPicker(pid){
+  if(!myCollections.length){ toast('Make a collection first'); return; }
+  let inIds=new Set();
+  try{
+    const {data}=await sb.from('collection_items').select('collection_id').eq('post_id',pid);
+    (data||[]).forEach(r=>inIds.add(r.collection_id));
+  }catch(e){}
+  $('actMenu').innerHTML=myCollections.map(c=>
+    `<button onclick="closeActMenu();toggleInCollection('${c.id}','${pid}',${inIds.has(c.id)})">${inIds.has(c.id)?'Remove from':'Add to'} ${esc(c.name)}</button>`
+  ).join('')+`<button onclick="closeActMenu()">Cancel</button>`;
+  $('actMenuWrap').classList.add('on'); rearm();
+}
+async function toggleInCollection(cid,pid,isIn){
+  try{
+    if(isIn){
+      const {error}=await sb.from('collection_items').delete().eq('collection_id',cid).eq('post_id',pid);
+      if(error) throw error;
+      toast('Removed from collection');
+    }else{
+      const {error}=await sb.from('collection_items').upsert({collection_id:cid,post_id:pid},{onConflict:'collection_id,post_id',ignoreDuplicates:true});
+      if(error) throw error;
+      toast('Added to collection');
+    }
+    if($('saved').classList.contains('on'))openSaved(savedCollection);
+  }catch(e){ toast('Failed: '+sbErr(e)); }
 }
 function closeSaved(){ $('saved').classList.remove('on'); }
 /* ============ PROFILE QR ============ */

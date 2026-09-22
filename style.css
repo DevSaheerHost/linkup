@@ -515,3 +515,16 @@
           border:1.5px solid rgba(255,255,255,.7)}
   .hlopt input:checked~.hltick{background:var(--accent);border-color:var(--accent);color:#fff}
   .hlopt input:checked~img{opacity:.6}
+
+  /* ---- saved collections ---- */
+  .ctabs{display:flex;gap:7px;overflow-x:auto;padding:12px 14px;scrollbar-width:none}
+  .ctabs::-webkit-scrollbar{display:none}
+  .ctab{flex:none;background:var(--soft);border:1px solid var(--line);color:var(--mut);
+        border-radius:16px;padding:6px 13px;font-size:12.5px;font-weight:600;white-space:nowrap}
+  .ctab.on{background:var(--accent);border-color:transparent;color:#fff}
+  .ctab.cnew{border-style:dashed}
+  .savedwrap{position:relative}
+  /* Sits over the thumbnail corner, dark enough to read on any photo. */
+  .savedfile{position:absolute;top:5px;right:5px;width:24px;height:24px;border-radius:50%;
+             display:flex;align-items:center;justify-content:center;
+             background:rgba(0,0,0,.55);color:#fff;backdrop-filter:blur(2px)}
