@@ -1,10 +1,79 @@
-/* LinkUp service worker - web push (messages + calls) + clicks + inline reply */
-self.addEventListener('install', e => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+/* LinkUp service worker - offline shell + web push (messages + calls) +
+   clicks + inline reply */
 
-// Minimal fetch handler so the app is installable as a PWA.
-// Intentionally a pass-through: we do NOT cache, to avoid serving stale HTML.
-self.addEventListener('fetch', () => {});
+/* ---- offline ----
+   This used to be a deliberate pass-through with no caching, to avoid
+   serving stale HTML. The cost was that losing signal meant a blank page:
+   an installed app that cannot open at all offline does not feel like an
+   app. Two strategies get both:
+
+     * HTML is network-first. Online you always get the freshest index.html,
+       exactly as before; offline you get the last one that worked.
+     * Static assets are cache-first, but only ever under the exact URL
+       requested - app.js?v=39 and app.js?v=40 are different entries, so a
+       version bump still fetches new code. That is what makes cache-first
+       safe here.
+
+   Bumping CACHE drops every previous version's entries on activate. */
+const CACHE = 'linkup-v1';
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon-192.png', '/badge-96.png'];
+
+self.addEventListener('install', e => {
+  // Pre-cache is best effort: one 404 must not stop the worker installing.
+  e.waitUntil(caches.open(CACHE).then(c => Promise.allSettled(SHELL.map(u => c.add(u)))).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+function isStaticAsset(url) {
+  return /\.(?:css|js|png|jpg|jpeg|webp|svg|ico|woff2?)$/i.test(url.pathname);
+}
+
+self.addEventListener('fetch', event => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+
+  const url = new URL(req.url);
+  // Only our own origin. Supabase reads and Storage media must always go to
+  // the network - serving a stale row or a signed URL that has since expired
+  // would be worse than failing.
+  if (url.origin !== self.location.origin) return;
+
+  const accepts = req.headers.get('accept') || '';
+  const isHTML = req.mode === 'navigate' || accepts.includes('text/html');
+
+  if (isHTML) {
+    event.respondWith(
+      fetch(req)
+        .then(res => {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match(req).then(hit => hit || caches.match('/index.html') || caches.match('/')))
+    );
+    return;
+  }
+
+  if (isStaticAsset(url)) {
+    event.respondWith(
+      caches.match(req).then(hit => hit || fetch(req).then(res => {
+        // Opaque/error responses are not worth keeping.
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+        }
+        return res;
+      }))
+    );
+  }
+});
 
 const SUPABASE_URL = 'https://prfdrpmnftegbiaglugh.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_es3WrqJR1IuFySgBAV_-2g_f23h-alp'; // must match app.js
