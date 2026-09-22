@@ -68,6 +68,21 @@ async function installSupabaseMocks(page, { userId, email, profile, tables = {} 
       ? rows.filter((r) => r && r.id === idFilter.slice(3))
       : rows;
 
+    /* An insert with .select() asks PostgREST to return what it wrote.
+       Without echoing it back, any code that reads the new row's id - and
+       then writes something referencing it - silently gets null and stops,
+       which looks like a bug in the app rather than in the mock. */
+    if (req.method() === 'POST' && (req.headers()['prefer'] || '').includes('return=representation')) {
+      let sent = [];
+      try { sent = JSON.parse(req.postData() || '[]'); } catch (_) { sent = []; }
+      const list = (Array.isArray(sent) ? sent : [sent]).map((row, i) => ({
+        id: row.id || `mock-${table}-${i}`,
+        created_at: new Date().toISOString(),
+        ...row,
+      }));
+      return json(route, isSingle ? (list[0] || null) : list, 201);
+    }
+
     if (tables[table] !== undefined) {
       const rows = byId(tables[table]);
       if (req.method() === 'HEAD') {

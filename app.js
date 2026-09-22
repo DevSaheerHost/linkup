@@ -1733,6 +1733,7 @@ async function loadProfile(uid){
       :(blocked
         ?`<button class="grad" style="color:#fff" onclick="toggleBlock('${uid}',true)">Unblock</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`
         :`${followMainBtn(uid,u,followId)}<button onclick="openChat('${u.id}')">Message</button><button class="morebtn" onclick="openUserMenu('${uid}')">${icon('more',18)}</button>`);
+    profileHighlights=(blocked||locked)?[]:await loadHighlights(uid);
     box.innerHTML=`<div class="prof">
       <div class="phdr">${avatarHtml(u,76)}<div class="pstats"><div><b>${posts.length}</b><span>posts</span></div><div ${locked?'':`onclick="openFollowList('${uid}','followers')" style="cursor:pointer"`}><b>${followersN}</b><span>followers</span></div><div ${locked?'':`onclick="openFollowList('${uid}','following')" style="cursor:pointer"`}><b>${followingN}</b><span>following</span></div></div></div>
       <div class="pname">${esc(u.name||u.username)}${vbadge(u)}${isMe?openStreakHtml(u):''}</div>
@@ -1740,7 +1741,7 @@ async function loadProfile(uid){
       ${(!isMe&&!blocked&&!locked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
       <div class="pbio">${esc(u.bio||'')}</div>
       <div class="pbtns">${btns}</div>
-    </div>${grid}`;
+    </div>${highlightsHtml(uid,isMe)}${grid}`;
     if(isMe){const need=posts.filter(p=>p.video_url&&!p.thumb_url);if(need.length)(async()=>{let any=false;for(const p of need){if(await backfillThumb(p))any=true;}if(any&&currentScreen==='Profile')loadProfile(me().id);})();}
   }catch(e){box.innerHTML='<div class="empty">Could not load profile</div>';}
 }
@@ -2491,13 +2492,96 @@ $('scPost').onclick=async()=>{
   catch(e){ hideUpload(); toast('Story failed: '+sbErr(e)); }
   finally{ btn.disabled=false; btn.textContent='Post'; }
 };
+/* ---- story highlights ----
+   Stories leave nothing behind after 24h, so a profile is just a grid.
+   Highlights pin past stories to it. Story rows are never purged, so a
+   highlight references the story rather than copying the image. */
+let profileHighlights=[];
+async function loadHighlights(uid){
+  try{
+    const {data,error}=await sb.from('highlights').select('*').eq('owner_id',uid).order('created_at');
+    if(error) throw error;
+    return data||[];
+  }catch(e){ return []; }
+}
+function highlightsHtml(uid,isMe){
+  if(!profileHighlights.length&&!isMe)return '';
+  const cells=profileHighlights.map(h=>`<div class="hlcell" onclick="openHighlight('${h.id}')">
+      <div class="hlring">${h.cover_url?`<img src="${safeUrl(h.cover_url)}" alt="">`:`<span class="hlph">${icon('image',20)}</span>`}</div>
+      <div class="nm">${esc(h.title)}</div>
+    </div>`).join('');
+  const add=isMe?`<div class="hlcell" onclick="openHighlightCompose()">
+      <div class="hlring hladd">+</div><div class="nm">New</div></div>`:'';
+  return `<div class="hlrow">${cells}${add}</div>`;
+}
+async function openHighlightCompose(){
+  $('listView').classList.add('on'); rearm(); $('listTitle').textContent='New highlight';
+  const body=$('listBody'); body.innerHTML=skRows(4);
+  try{
+    /* Every story ever posted, not just the live ones - the whole point is
+       to bring back something that has already expired. */
+    const {data,error}=await sb.from('stories').select('*').eq('author_id',me().id).order('created_at',{ascending:false}).limit(60);
+    if(error) throw error;
+    const rows=data||[];
+    if(!rows.length){ body.innerHTML='<div class="empty">Post a story first, then you can highlight it</div>'; return; }
+    body.innerHTML=`<div class="hlcompose">
+      <input class="field" id="hlTitle" placeholder="Highlight name" maxlength="40">
+      <div class="hlpick">${rows.map(r=>`<label class="hlopt"><input type="checkbox" value="${r.id}" data-cover="${esc(r.image_url||'')}"><img src="${safeUrl(r.image_url)}" alt=""><span class="hltick">${icon('check',16)}</span></label>`).join('')}</div>
+      <button class="btn grad" id="hlSave">Create highlight</button>
+    </div>`;
+    $('hlSave').onclick=saveHighlight;
+  }catch(e){ body.innerHTML='<div class="empty">Could not load your stories</div>'; }
+}
+async function saveHighlight(){
+  const title=($('hlTitle').value||'').trim();
+  const picked=[...document.querySelectorAll('.hlpick input:checked')];
+  if(!title){ toast('Give it a name'); return; }
+  if(!picked.length){ toast('Pick at least one story'); return; }
+  const btn=$('hlSave'); btn.disabled=true; btn.textContent='Creating…';
+  try{
+    const {data:h,error}=await sb.from('highlights')
+      .insert({owner_id:me().id,title,cover_url:picked[0].getAttribute('data-cover')||null})
+      .select().single();
+    if(error) throw error;
+    const items=picked.map((el,i)=>({highlight_id:h.id,story_id:el.value,position:i}));
+    const {error:e2}=await sb.from('highlight_items').insert(items);
+    if(e2) throw e2;
+    closeList(); toast('Highlight created'); loadProfile(me().id);
+  }catch(e){ toast('Could not create: '+sbErr(e)); btn.disabled=false; btn.textContent='Create highlight'; }
+}
+async function deleteHighlight(hid){
+  try{
+    const {error}=await sb.from('highlights').delete().eq('id',hid);
+    if(error) throw error;
+    closeStory(); toast('Highlight removed');
+  }catch(e){ toast('Delete failed: '+sbErr(e)); }
+}
+async function openHighlight(hid){
+  const h=profileHighlights.find(x=>x.id===hid); if(!h)return;
+  try{
+    const {data,error}=await sb.from('highlight_items').select('story_id,position').eq('highlight_id',hid).order('position');
+    if(error) throw error;
+    const ids=(data||[]).map(r=>r.story_id);
+    if(!ids.length){ toast('This highlight is empty'); return; }
+    const {data:rows}=await sb.from('stories').select('*').in('id',ids);
+    const byId={}; (rows||[]).forEach(r=>byId[r.id]=r);
+    svList=ids.map(i=>byId[i]).filter(Boolean);
+    if(!svList.length){ toast('This highlight is empty'); return; }
+    svUser=(await getUser(h.owner_id))||{username:'user',id:h.owner_id};
+    svIdx=0; svHighlight=h;
+    buildStoryView(); $('storyView').classList.add('on'); rearm(); playStory();
+  }catch(e){ toast('Could not open: '+sbErr(e)); }
+}
+let svHighlight=null;
 function openStory(uid,startIdx){
+  svHighlight=null;
   svList=(storyGroups[uid]||[]).slice(); if(!svList.length){toast('No active story');return;}
   svUser=storyUsers[uid]||{username:'user',id:uid};
   svIdx=(startIdx==null)?0:Math.max(0,Math.min(startIdx,svList.length-1));
   buildStoryView(); $('storyView').classList.add('on'); rearm(); playStory();
 }
 function adjStoryUser(dir){
+  if(svHighlight)return null;      // a highlight is a closed set, not a tray position
   if(!svUser)return null;
   const i=storyOrder.indexOf(svUser.id); if(i<0)return null;
   const j=i+dir; if(j<0||j>=storyOrder.length)return null;
@@ -2508,12 +2592,12 @@ function buildStoryView(){
   const bars=svList.map((_,i)=>`<div class="sbar"><i id="sbar_${i}"></i></div>`).join('');
   const x='<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   $('storyView').innerHTML=`<div class="sbars">${bars}</div>
-    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}</div><span class="sleft" id="svLeft"></span><button class="sclose" onclick="closeStory()">${x}</button></div>
+    <div class="shead">${avatarHtml(svUser,32)}<div class="nm">${esc(svUser.username||'You')}${svHighlight?` <span class="hlname">· ${esc(svHighlight.title)}</span>`:''}</div><span class="sleft" id="svLeft"></span><button class="sclose" onclick="closeStory()">${x}</button></div>
     <div class="simg" id="svImg"></div>
     <div class="szones"><div onclick="prevStory()"></div><div onclick="nextStory()"></div></div>
     <div id="svTags" style="position:absolute;bottom:${svUser.id===me().id?'84px':'134px'};left:16px;right:80px;color:#fff;font-size:13px;z-index:3;text-shadow:0 1px 4px #000"></div>
-    ${svUser.id===me().id?`<div id="svSeen" onclick="openSeenList()" style="position:absolute;bottom:24px;left:16px;color:#fff;font-size:13px;z-index:3;cursor:pointer"></div><button id="svDel" class="btn" style="position:absolute;bottom:18px;right:16px;width:auto;padding:9px 20px;border-radius:22px;background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.25);z-index:3">Delete</button>`:`<div class="sreacts">${REACT_ORDER.map(k=>`<button class="sreactbtn" onclick="sReact('${k}')">${reactIcon(k,30)}</button>`).join('')}</div><div class="sreply"><input id="sReplyInput" placeholder="Reply to ${esc(svUser.username||'')}…" onfocus="clearTimeout(svTimer)" onkeydown="if(event.key==='Enter')sReply()"><button id="sLikeBtn" class="sheart" onclick="sLike()">${icon('heart',26)}</button></div>`}`;
-  const d=$('svDel'); if(d)d.onclick=delStory;
+    ${svUser.id===me().id?`<div id="svSeen" onclick="openSeenList()" style="position:absolute;bottom:24px;left:16px;color:#fff;font-size:13px;z-index:3;cursor:pointer"></div><button id="svDel" class="btn" style="position:absolute;bottom:18px;right:16px;width:auto;padding:9px 20px;border-radius:22px;background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.25);z-index:3">${svHighlight?'Remove':'Delete'}</button>`:`<div class="sreacts">${REACT_ORDER.map(k=>`<button class="sreactbtn" onclick="sReact('${k}')">${reactIcon(k,30)}</button>`).join('')}</div><div class="sreply"><input id="sReplyInput" placeholder="Reply to ${esc(svUser.username||'')}…" onfocus="clearTimeout(svTimer)" onkeydown="if(event.key==='Enter')sReply()"><button id="sLikeBtn" class="sheart" onclick="sLike()">${icon('heart',26)}</button></div>`}`;
+  const d=$('svDel'); if(d)d.onclick=()=>svHighlight?deleteHighlight(svHighlight.id):delStory();
 }
 function showStoryFrame(){
   const s=svList[svIdx]; if(!s)return;
@@ -2521,7 +2605,9 @@ function showStoryFrame(){
   svList.forEach((_,i)=>{const b=$('sbar_'+i);if(b){b.style.transition='none';b.style.width=i<svIdx?'100%':'0';}});
   const tg=$('svTags'); if(tg)tg.innerHTML=storyTagsLine(s.tags);
   const lf=$('svLeft');
-  if(lf){ const t=storyTimeLeft(s.created_at); lf.textContent=t?t.label:''; lf.classList.toggle('urgent',!!(t&&t.urgent)); }
+  /* "2h left" is meaningless on a highlight - the story already expired,
+     that is why it was highlighted. */
+  if(lf){ const t=svHighlight?null:storyTimeLeft(s.created_at); lf.textContent=t?t.label:''; lf.classList.toggle('urgent',!!(t&&t.urgent)); }
   if(svUser.id!==me().id){
     refreshStoryLike();
     if(!storyViewed.has(s.id)){ storyViewed.add(s.id); sb.from('story_views').upsert({story_id:s.id,viewer_id:me().id},{onConflict:'story_id,viewer_id',ignoreDuplicates:true}).then(()=>{}).catch(()=>{}); }

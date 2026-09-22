@@ -98,8 +98,13 @@
   .pstats span{font-size:12px;color:var(--mut)}
   .pname{font-weight:700;font-size:15px}
   .pbio{font-size:13px;color:var(--mut);margin-bottom:14px;white-space:pre-wrap}
-  .pbtns{display:flex;gap:10px;margin-bottom:18px}
-  .pbtns button{flex:1;padding:9px;border-radius:9px;font-weight:700;font-size:13px;background:var(--soft);color:var(--txt);border:1px solid var(--line)}
+  /* Up to seven buttons can land here now (Requests and Reports join the
+     five that were always there), and flex:1 was squeezing labels like
+     "Edit profile" onto two lines. Wrap into rows instead, each button
+     keeping enough width to stay on one line. */
+  .pbtns{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+  .pbtns button{flex:1 1 92px;padding:9px 10px;border-radius:9px;font-weight:700;font-size:13px;
+                white-space:nowrap;background:var(--soft);color:var(--txt);border:1px solid var(--line)}
   /* .grad alone loses to `.pbtns button` on specificity, so the primary
      action on a profile - Follow, Request - was rendering flat like the
      secondary ones. */
@@ -487,3 +492,26 @@
   .rprow .reqbtns{flex-direction:column;gap:5px;min-width:96px}
   .rprow .reqbtns button{width:100%}
   .rprow .reqbtns button.danger{color:#ff6b6b;border-color:rgba(255,107,107,.35)}
+
+  /* ---- story highlights ---- */
+  .hlrow{display:flex;gap:14px;overflow-x:auto;padding:2px 16px 16px;scrollbar-width:none}
+  .hlrow::-webkit-scrollbar{display:none}
+  .hlcell{flex:0 0 66px;text-align:center;cursor:pointer}
+  .hlring{width:62px;height:62px;border-radius:50%;overflow:hidden;background:var(--soft);
+          border:2px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--mut)}
+  .hlring img{width:100%;height:100%;object-fit:cover}
+  .hlring.hladd{border-style:dashed;font-size:26px;font-weight:300;line-height:1;color:var(--mut)}
+  .hlcell .nm{font-size:11.5px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hlname{font-weight:400;opacity:.8}
+  .hlcompose{padding:16px}
+  /* Three across, square, so a long list scrolls in the sheet rather than
+     pushing the Create button off the bottom. */
+  .hlpick{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:4px 0 16px;max-height:46vh;overflow-y:auto}
+  .hlopt{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;cursor:pointer;background:var(--soft)}
+  .hlopt img{width:100%;height:100%;object-fit:cover;transition:opacity .15s}
+  .hlopt input{position:absolute;opacity:0;pointer-events:none}
+  .hltick{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;display:flex;
+          align-items:center;justify-content:center;background:rgba(0,0,0,.45);color:transparent;
+          border:1.5px solid rgba(255,255,255,.7)}
+  .hlopt input:checked~.hltick{background:var(--accent);border-color:var(--accent);color:#fff}
+  .hlopt input:checked~img{opacity:.6}
