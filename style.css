@@ -448,3 +448,22 @@
   .togrow .tog::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .18s}
   .togrow input:checked+.tog{background:var(--accent)}
   .togrow input:checked+.tog::after{transform:translateX(18px)}
+
+  /* ---- suggested people ---- */
+  /* Matches the existing .slabel rather than redefining it - overriding
+     .slabel here would silently restyle the Explore and People headings. */
+  .sghead{padding:12px 14px 6px;font-weight:700;color:var(--mut);font-size:13px}
+  /* Horizontal rail: cards are a fixed width so a long username can't
+     stretch one card wider than the rest. */
+  .sgrow{display:flex;gap:10px;overflow-x:auto;padding:0 16px 14px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .sgrow::-webkit-scrollbar{display:none}
+  .sgcard{position:relative;flex:0 0 132px;display:flex;flex-direction:column;align-items:center;gap:6px;
+          background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 10px 12px;cursor:pointer}
+  .sgx{position:absolute;top:4px;right:6px;background:none;color:var(--mut);font-size:17px;line-height:1;padding:2px 5px;border-radius:6px}
+  .sgx:hover{color:var(--txt)}
+  .sgname{font-weight:600;font-size:13px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sgwhy{color:var(--mut);font-size:11px;line-height:1.3;text-align:center;min-height:28px;
+         display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .sgfollow{width:100%;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+            border-radius:8px;padding:7px;font-weight:700;font-size:12.5px}
+  .sgfollow.done{background:var(--soft);color:var(--mut)}

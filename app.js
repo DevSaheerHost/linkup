@@ -450,6 +450,49 @@ async function loadSocialProof(posts,likes){
    people you actually follow or interact with. Rendered as its own strip
    at the top of For You rather than mixed into the ranking, so the
    seen-post suppression in get_feed_for_you stays exactly as it is. */
+/* People you may know. The app has every feature and almost no graph, so a
+   new account sees an empty Following tab and gives For You nothing to rank
+   on. This is the way out of that, and it earns its place at the top of the
+   feed only while the account is still small. */
+let suggestCache=null;
+async function loadSuggestions(n){
+  try{
+    const {data,error}=await sb.rpc('suggest_people',{page_size:n||12});
+    if(error) throw error;
+    return data||[];
+  }catch(e){ return []; }
+}
+function suggestCardHtml(u){
+  const btn=u.is_private
+    ? `<button class="sgfollow" onclick="event.stopPropagation();requestFollow('${u.id}').then(()=>renderSuggestRail())">Request</button>`
+    : `<button class="sgfollow" onclick="event.stopPropagation();followFrom('${u.id}').then(()=>renderSuggestRail())">Follow</button>`;
+  return `<div class="sgcard" onclick="openProfile('${u.id}')">
+    <button class="sgx" title="Not interested" onclick="event.stopPropagation();dismissSuggestion('${u.id}')">&times;</button>
+    ${avatarHtml(u,62)}
+    <div class="sgname">${esc(u.username)}${vbadge(u)}</div>
+    <div class="sgwhy">${esc(u.reason||'')}</div>
+    ${btn}
+  </div>`;
+}
+async function renderSuggestRail(){
+  const host=$('suggestRail'); if(!host)return;
+  host.innerHTML='';
+  /* Following is a feed of people you chose; suggestions belong on For You
+     and on Search, not in the middle of that. */
+  if(feedMode!=='all')return;
+  const people=await loadSuggestions(10);
+  suggestCache=people;
+  if(!people.length)return;
+  host.innerHTML=`<div class="sghead">Suggested for you</div><div class="sgrow">${people.map(suggestCardHtml).join('')}</div>`;
+}
+async function dismissSuggestion(uid){
+  const card=document.querySelector(`.sgcard [onclick*="${uid}"]`);
+  try{
+    await sb.from('suggestion_dismissals').upsert({user_id:me().id,dismissed_id:uid},{onConflict:'user_id,dismissed_id',ignoreDuplicates:true});
+  }catch(e){ /* dismissing is a nicety; never block the UI on it */ }
+  renderSuggestRail();
+  if(currentScreen==='Search'&&!$('searchInput').value.trim())loadExplore();
+}
 async function renderMissedStrip(){
   const host=$('missedStrip'); if(!host)return;
   host.innerHTML='';
@@ -594,8 +637,8 @@ function skReel(){return `<div class="reel">${skBlock('100%','100%','0')}</div>`
 function skStories(n){return Array.from({length:n||5},()=>`<div class="scell">${skBlock('58px','58px','50%')}${skBlock('44px','10px','5px','margin-top:6px')}</div>`).join('');}
 async function loadFeed(){
   const box=$('sFeed');
-  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="missedStrip"></div><div id="feedPosts"></div>`;
-  renderFeedTabs(); loadStories(); renderMissedStrip(); loadFeedPosts(true);
+  box.innerHTML=`<div class="stray" id="storyTray"></div><div class="ftabs" id="ftabs"></div><div id="suggestRail"></div><div id="missedStrip"></div><div id="feedPosts"></div>`;
+  renderFeedTabs(); loadStories(); renderSuggestRail(); renderMissedStrip(); loadFeedPosts(true);
 }
 let feedPage=1, feedLoading=false, feedDone=false, feedFollowIds=null, feedToken=0, feedMoreObs=null;
 let feedCursor=null; // {score,created_at,id} keyset cursor for the "For You" ranked feed
@@ -684,7 +727,7 @@ function armFeedPrefetch(){
   feedMoreObs.observe(target);
 }
 function renderFeedTabs(){const t=$('ftabs');if(!t)return;t.innerHTML=`<button class="${feedMode==='all'?'on':''}" onclick="setFeedMode('all')">For You</button><button class="${feedMode==='following'?'on':''}" onclick="setFeedMode('following')">Following</button>`;}
-function setFeedMode(m){feedMode=m;renderFeedTabs();renderMissedStrip();loadFeedPosts(true);}
+function setFeedMode(m){feedMode=m;renderFeedTabs();renderSuggestRail();renderMissedStrip();loadFeedPosts(true);}
 $('main').addEventListener('scroll',()=>{ const m=$('main'); if(currentScreen==='Feed'){ onFeedScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1800) loadFeedPosts(false); } else if(currentScreen==='Reels'){ onReelsScroll(); if(m.scrollTop+m.clientHeight>=m.scrollHeight-1400) loadReels(false); } });
 function applyVideoCrop(video,crop){
   if(!crop)return;
@@ -1525,7 +1568,18 @@ async function runSearch(q){
 }
 async function loadExplore(){
   const box=$('searchResults'); box.innerHTML=skGrid(9);
-  try{ const {data}=await sb.from('posts').select('*').order('created_at',{ascending:false}).limit(18); const posts=(data||[]).filter(p=>!blockedIds.has(p.author_id)); box.innerHTML=posts.length?('<div class="slabel">Explore</div><div class="grid">'+posts.map(gridCell).join('')+'</div>'):'<div class="empty">Nothing to explore yet</div>'; }catch(e){box.innerHTML='';}
+  try{
+    const [people,{data}]=await Promise.all([
+      loadSuggestions(12),
+      sb.from('posts').select('*').order('created_at',{ascending:false}).limit(18)
+    ]);
+    const posts=(data||[]).filter(p=>!blockedIds.has(p.author_id)&&!mutedPostIds.has(p.author_id));
+    /* Search with an empty box is where someone goes looking for people, so
+       suggestions lead here rather than trailing the grid. */
+    let html=people.length?`<div class="slabel">Suggested for you</div><div class="sgrow">${people.map(suggestCardHtml).join('')}</div>`:'';
+    html+=posts.length?('<div class="slabel">Explore</div><div class="grid">'+posts.map(gridCell).join('')+'</div>'):'';
+    box.innerHTML=html||'<div class="empty">Nothing to explore yet</div>';
+  }catch(e){box.innerHTML='';}
 }
 function gridCell(p){
   if(p.poll&&!p.image_url&&!p.thumb_url){ const q=(p.poll&&p.poll.q)||''; return `<div class="gcell gpoll" onclick="openPostView('${p.id}')"><span class="gpollicon">${icon('poll',26)}</span><span class="gpollq">${esc(q)}</span></div>`; }
