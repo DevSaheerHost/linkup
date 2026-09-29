@@ -1640,7 +1640,7 @@ function selectMpPhoto(i){
   $('cropZoom').value=photoCroppers[i].state.zoom;
 }
 function setupVideo(file){
-  if(file.size>60*1024*1024){toast('Video too large (max ~60MB)');resetCreate();return;}
+  if(file.size>300*1024*1024){toast('Video too large (max ~60MB)');resetCreate();return;}
   postVideoFile=file; mediaKind='video';
   const drop=$('postDrop'), V=drop.clientWidth||300;
   drop.innerHTML=`<div id="vidFrameBox"><video id="vidFrameEl" src="${URL.createObjectURL(file)}" muted loop playsinline></video></div>`;
