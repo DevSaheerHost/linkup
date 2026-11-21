@@ -593,3 +593,17 @@
             font-size:28px;font-weight:300;color:var(--txt);background:var(--soft);border:1px solid var(--line)}
   .tagname{font-weight:700;font-size:17px;word-break:break-word}
   .tagcount{color:var(--mut);font-size:13px;margin-top:2px}
+
+  /* ---- reel view totals on your own profile grid ----
+     Bottom-left, like the play count on a reel thumbnail elsewhere. White
+     with a soft shadow in both themes: it sits on the video frame, which
+     is not themed. */
+  .gviews{position:absolute;left:6px;bottom:5px;display:inline-flex;align-items:center;gap:3px;
+          color:#fff;font-size:12.5px;line-height:1;pointer-events:none;
+          filter:drop-shadow(0 1px 2px rgba(0,0,0,.75))}
+  .gviews b{font-weight:700;letter-spacing:.1px}
+  /* A light gradient at the bottom of the cell so the count stays readable
+     over a bright frame. */
+  .gcell:has(.gviews)::after{content:'';position:absolute;left:0;right:0;bottom:0;height:34%;
+          background:linear-gradient(to top,rgba(0,0,0,.45),transparent);pointer-events:none}
+  .gviews{z-index:1}

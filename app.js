@@ -154,6 +154,7 @@ const PATHS={
   reels:'<rect x="3" y="4" width="18" height="16" rx="4"/><path d="M10.2 8.4l5.2 3.6-5.2 3.6z" fill="currentColor" stroke="none"/>',
   message:'<path d="M21 11.5a8 8 0 0 1-11.5 7.2L4 20l1.3-4.4A8 8 0 1 1 21 11.5z"/>',
   lock:'<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7"/>',
+  play:'<path d="M8 5.2v13.6L18.6 12z" stroke-linejoin="round"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/>',
   moon:'<path d="M20 13.5A8.2 8.2 0 0 1 10.5 4a8.2 8.2 0 1 0 9.5 9.5z"/>',
   contrast:'<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/>',
@@ -1914,7 +1915,33 @@ function gridCell(p){
   const multi=(Array.isArray(p.photos)&&p.photos.length>1)?`<span class="gmulti">${icon('layers',16)}</span>`:'';
   const fb=icon(p.video_url?'reels':'image',24);
   const img=t?`<img class="blur-load" src="${safeUrl(t)}" loading="lazy" decoding="async" onload="this.classList.add('loaded')" onerror="this.remove();this.closest('.gcell').classList.add('gph')">`:'';
-  return `<div class="gcell ${t?'':'gph'}" onclick="openPostView('${p.id}')">${img}<span class="gfallback">${fb}</span>${play}${multi}</div>`;
+  return `<div class="gcell ${t?'':'gph'}" data-pid="${p.id}" onclick="openPostView('${p.id}')">${img}<span class="gfallback">${fb}</span>${play}${multi}</div>`;
+}
+/* 1234 -> "1.2K", 15300 -> "15K", 2100000 -> "2.1M" - the way view counts
+   are read at a glance on a grid. */
+const compactFmt=(()=>{ try{ return new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}); }catch(_){ return null; } })();
+function compactNum(n){ n=Number(n)||0; return compactFmt?compactFmt.format(n):String(n); }
+/* View totals on the reels in your own profile grid.
+
+   Only on your own profile, deliberately: postviews RLS lets a post's
+   author read every view row, so these counts are exact - for anyone else
+   the same query only sees their own row and would show 0 or 1.
+
+   One HEAD count per reel rather than fetching the rows, so the payload
+   stays a number however many views a reel collects. Filled in after the
+   grid renders; a count that fails to load shows nothing rather than a
+   misleading 0. */
+async function fillReelViews(posts){
+  const reels=(posts||[]).filter(p=>p.video_url);
+  await Promise.all(reels.map(async p=>{
+    try{
+      const {count,error}=await sb.from('postviews').select('id',{count:'exact',head:true}).eq('post_id',p.id);
+      if(error||count==null)return;
+      const cell=document.querySelector(`#sProfile .gcell[data-pid="${p.id}"]`);
+      if(!cell||cell.querySelector('.gviews'))return;
+      cell.insertAdjacentHTML('beforeend',`<span class="gviews" title="${count} view${count===1?'':'s'}">${icon('play',13,{fill:'currentColor'})}<b>${compactNum(count)}</b></span>`);
+    }catch(_){}
+  }));
 }
 
 /* ================= PROFILE ================= */
@@ -1966,6 +1993,7 @@ async function loadProfile(uid){
       <div class="pbio">${richText(u.bio||'')}</div>
       <div class="pbtns">${btns}</div>
     </div>${highlightsHtml(uid,isMe)}${grid}`;
+    if(isMe)fillReelViews(posts);
     if(isMe){const need=posts.filter(p=>p.video_url&&!p.thumb_url);if(need.length)(async()=>{let any=false;for(const p of need){if(await backfillThumb(p))any=true;}if(any&&currentScreen==='Profile')loadProfile(me().id);})();}
   }catch(e){box.innerHTML='<div class="empty">Could not load profile</div>';}
 }
