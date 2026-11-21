@@ -21,6 +21,41 @@ const $=id=>document.getElementById(id);
 let myProfile=null;
 const me=()=>myProfile;
 const esc=s=>(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* #hashtags and @mentions in user text. The character set is spelled out
+   as explicit ranges, identically to extract_hashtags() in the database, so
+   a tag the client links is exactly the tag the server stored - Postgres and
+   JS disagree on what counts as punctuation or a symbol, so neither engine's
+   built-in classes are used. A tag runs until whitespace or ASCII
+   punctuation (underscore excepted), curly quotes, an ellipsis or a danda,
+   and must start a word: "x#mid" is not a tag. Combining marks are allowed,
+   which is what keeps Malayalam, Hindi and Tamil tags whole.
+
+   The raw string is tokenised and each piece escaped on its own, rather
+   than linkifying already-escaped HTML, where "&#39;" would itself look like
+   a hashtag. Tags travel in data- attributes, never inside an inline script
+   string, and a single delegated listener handles the taps. */
+const TAG_STOP='\\s\\u0021-\\u002f\\u003a-\\u0040\\u005b-\\u005e\\u0060\\u007b-\\u007e\\u2018-\\u201f\\u2026\\u0964\\u0965';
+const RICH_RE=new RegExp('(^|['+TAG_STOP+'])([#@])([^'+TAG_STOP+']+)','gu');
+function richText(raw){
+  const s=String(raw||''); let out='', last=0;
+  for(const m of s.matchAll(RICH_RE)){
+    const at=m.index+m[1].length, word=m[3];
+    out+=esc(s.slice(last,at));
+    out+=m[2]==='#'
+      ? `<span class="htag" data-tag="${esc(word.toLowerCase())}">#${esc(word)}</span>`
+      : `<span class="mtag" data-user="${esc(word.toLowerCase())}">@${esc(word)}</span>`;
+    last=at+1+word.length;
+  }
+  return out+esc(s.slice(last));
+}
+/* Capture phase, so a tap on a tag inside a post or comment opens the tag
+   and never also triggers the post's own tap handling underneath it. */
+document.addEventListener('click',e=>{
+  const t=e.target.closest&&e.target.closest('.htag,.mtag'); if(!t)return;
+  e.stopPropagation(); e.preventDefault();
+  if(t.dataset.tag)openHashtag(t.dataset.tag);
+  else if(t.dataset.user)openProfileByUsername(t.dataset.user);
+},true);
 const likeEsc=s=>(s||'').replace(/[%_]/g,'\\$&');
 const userCache={};
 async function getUser(id,fresh){
@@ -815,7 +850,7 @@ function renderPost(p,cmts,full){
   const st=likeState[p.id]||{count:0,myLikeId:null};
   const liked=!!st.myLikeId;
   const saved=!!saveState[p.id];
-  const cap=p.caption?`<div class="cap"><b>${esc(a.username)}</b>${esc(p.caption)}</div>`:'';
+  const cap=p.caption?`<div class="cap"><b>${esc(a.username)}</b>${richText(p.caption)}</div>`:'';
   const tree=buildCommentTree(cmts);
   const rootsShown=full?tree.roots:tree.roots.slice(-2);
   const shown=rootsShown.map(r=>commentBlock(r,tree.childrenOf[r.id]||[],full,p.id)).join('');
@@ -1354,7 +1389,7 @@ let reelCursor=null; // {score,created_at,id} keyset cursor for the ranked reel 
 function reelHTML(p){
   const a=p.author||{username:'user',id:p.author_id};
   const st=likeState[p.id]||{count:0,myLikeId:null}; const liked=!!st.myLikeId;
-  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${safeUrl(p.video_url)}#t=0.1" ${p.thumb_url?`poster="${safeUrl(p.thumb_url)}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span>${followBtnHtml(a.id,'onreel')}</div>${p.caption?`<div class="rcap">${esc(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
+  return `<div class="reel" id="reel_${p.id}"><video class="reelvid" onclick="mediaTap(event,'${p.id}','reel')" src="${safeUrl(p.video_url)}#t=0.1" ${p.thumb_url?`poster="${safeUrl(p.thumb_url)}"`:''} loop muted playsinline preload="metadata" oncanplay="tryAutoplay(this)"></video><button class="mutebtn top" onclick="toggleMuteFor(this.parentNode.querySelector('video'))">${icon('volumeOff',20)}</button><div class="reelacts"><button class="ract like ${liked?'liked':''}" onclick="reelLike('${p.id}',this)">${icon('heart',28,{fill:liked?'currentColor':'none'})}<span class="rc" id="rlc_${p.id}">${st.count}</span></button><button class="ract" onclick="openPostView('${p.id}')">${icon('comment',28)}</button><button class="ract" onclick="openShare('${p.id}')">${icon('send',26)}</button></div><div class="reelinfo"><div class="rrow">${avatarHtml(a,34)}<span class="nm" onclick="openProfile('${a.id}')">${esc(a.username)}</span>${followBtnHtml(a.id,'onreel')}</div>${p.caption?`<div class="rcap">${richText(p.caption)}</div>`:''}${tagsHtml(p.tags)}<span class="rviews" id="rvc_${p.id}"></span></div></div>`;
 }
 async function reelPrep(posts){
   const pids=posts.map(p=>p.id);
@@ -1812,9 +1847,39 @@ async function deleteDraft(pid){
 /* ================= SEARCH ================= */
 let searchT=null;
 $('searchInput').oninput=e=>{clearTimeout(searchT);const q=e.target.value.trim();searchT=setTimeout(()=>runSearch(q),300);};
+function openHashtag(tag){
+  /* A tag can be tapped from a caption or comment inside the post view, or
+     from a list overlay; close whichever is up so the results aren't hidden
+     behind it. */
+  if($('postView').classList.contains('on'))closePostView();
+  if($('listView').classList.contains('on'))closeList();
+  show('Search');
+  $('searchInput').value='#'+tag;
+  runSearch('#'+tag);
+}
+/* A query starting with # is a tag lookup against the stored hashtags
+   column (GIN-indexed), not a caption substring match - "#dev" should find
+   posts tagged #dev, not every caption that happens to contain "dev". */
+async function runHashtag(raw){
+  const box=$('searchResults');
+  const m=('#'+raw).match(new RegExp('#([^'+TAG_STOP+']+)','u'));
+  const tag=m?m[1].toLowerCase():'';
+  if(!tag){ box.innerHTML='<div class="empty">Type a tag after #</div>'; return; }
+  box.innerHTML=skGrid(9);
+  try{
+    const {data,count,error}=await sb.from('posts').select('*',{count:'exact'})
+      .contains('hashtags',[tag]).order('created_at',{ascending:false}).limit(60);
+    if(error) throw error;
+    const posts=(data||[]).filter(p=>!blockedIds.has(p.author_id)&&!mutedPostIds.has(p.author_id));
+    const n=count||posts.length;
+    const head=`<div class="taghead"><div class="tagbadge">#</div><div><div class="tagname">#${esc(tag)}</div><div class="tagcount">${n} post${n===1?'':'s'}</div></div></div>`;
+    box.innerHTML=head+(posts.length?`<div class="grid">${posts.map(gridCell).join('')}</div>`:'<div class="empty">No posts with this tag yet</div>');
+  }catch(e){ box.innerHTML='<div class="empty">Could not load this tag</div>'; }
+}
 async function runSearch(q){
   const box=$('searchResults');
   if(!q){loadExplore();return;}
+  if(q[0]==='#'){ runHashtag(q.slice(1)); return; }
   const eq=likeEsc(q);
   try{
     const {data:userRows}=await sb.from('profiles').select('*').or('username.ilike.%'+eq+'%,name.ilike.%'+eq+'%').limit(25);
@@ -1898,7 +1963,7 @@ async function loadProfile(uid){
       <div class="pname">${esc(u.name||u.username)}${vbadge(u)}${isMe?openStreakHtml(u):''}</div>
       <div class="mut" style="color:var(--mut);font-size:13px;margin-bottom:6px">@${esc(u.username)}</div>
       ${(!isMe&&!blocked&&!locked)?(isOnline(u)?`<div class="ppresence" style="color:#3ddc84"><span class="odot on"></span>Online</div>`:(u.last_seen?`<div class="ppresence" style="color:var(--mut)">last seen ${timeAgo(u.last_seen)}</div>`:'')):''}
-      <div class="pbio">${esc(u.bio||'')}</div>
+      <div class="pbio">${richText(u.bio||'')}</div>
       <div class="pbtns">${btns}</div>
     </div>${highlightsHtml(uid,isMe)}${grid}`;
     if(isMe){const need=posts.filter(p=>p.video_url&&!p.thumb_url);if(need.length)(async()=>{let any=false;for(const p of need){if(await backfillThumb(p))any=true;}if(any&&currentScreen==='Profile')loadProfile(me().id);})();}
@@ -3087,7 +3152,7 @@ function commentRow(c,full,pid,isReply){
   const cnt=`<span class="clk" id="clc_${c.id}">${cl.count?cl.count:''}</span>`;
   const replyTo=c.parent_id||c.id;
   const acts=full?`<span class="cact"><span onclick="startCReply('${pid}','${replyTo}','${esc(u.username)}')">Reply</span>${mine?`<span onclick="editComment('${c.id}')">Edit</span><span onclick="delComment('${c.id}')">Delete</span>`:''}</span>`:'';
-  return `<div class="c${isReply?' creply':''}" id="cm_${c.id}"><div class="crow"><div class="ctxt"><b>${esc(u.username)}</b>${esc(c.text)}${acts}</div><div class="chearts">${heart}${cnt}</div></div></div>`;
+  return `<div class="c${isReply?' creply':''}" id="cm_${c.id}"><div class="crow"><div class="ctxt"><b>${esc(u.username)}</b>${richText(c.text)}${acts}</div><div class="chearts">${heart}${cnt}</div></div></div>`;
 }
 function startCReply(pid,parentId,uname){ const inp=$('ci_'+pid); if(!inp)return; inp.value='@'+uname+' '; inp.dataset.parent=parentId; inp.focus(); }
 async function toggleCLike(cid){
@@ -3129,7 +3194,7 @@ async function openNotif(){
     else{
       const actorIds=[...new Set(items.map(n=>n.actor_id))]; const users={};
       await Promise.all(actorIds.map(async id=>{users[id]=await getUser(id);}));
-      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you',followreq:'wants to follow you'};
+      const NOTIF_VERB={like:'liked your post',comment:n=>'commented: '+esc(n.text||''),reply:n=>'replied: '+esc(n.text||''),commentlike:'liked your comment',tag:'tagged you in a post',storylike:'liked your story',follow:'started following you',followreq:'wants to follow you',followaccept:'accepted your follow request'};
       body.innerHTML=items.map(n=>{
         const u=users[n.actor_id]||{username:'someone'};
         const openAction=n.type==='followreq'?'openFollowRequests()'
